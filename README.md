@@ -17,12 +17,12 @@ Fodler structure should be:
 
 files
 
-    ---DEX
+    /DEX
     
-        ---payload.dex (provide you payload.dex)
+       payload.dex (provide you payload.dex)
         
-        ---InjectedApp.dex (never edit this!)
+        InjectedApp.dex (never edit this!)
         
-    ---Manifest
+    /Manifest
     
 Archinome.exe
