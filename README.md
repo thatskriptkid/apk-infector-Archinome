@@ -9,3 +9,5 @@ Receives two args:
 ```
 
 To inject you malicious code, you should place file named payload.dex with malicious code to "files/DEX" folder.
+
+Please check pathes in sources because I was testing on Windows.
