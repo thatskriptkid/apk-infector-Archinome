@@ -15,9 +15,15 @@ Please correct paths in sources to fit your environment.
 
 Fodler structure should be:
 
+```
 files/
+
     /DEX
+    
        payload.dex (provide you payload.dex)
+       
        InjectedApp.dex (never edit this!)
+       
     /Manifest
+```
 Archinome.exe
