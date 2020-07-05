@@ -2,7 +2,9 @@
 
 Program that infects APK with malicious code using DEX/Manifest patching
 
-Full description about What is it and How it works:
+**Full description about What is it and How it works:**
+
+**Please read article berfore use it!**
 
 Receives two args:
 ```
@@ -16,3 +18,5 @@ To inject your malicious code, you should place file named payload.dex with mali
 2. Method `public void executePayload()`
 
 After you infect apk please sign it.
+
+If there are problems: check file paths
