@@ -3,7 +3,9 @@
 Program that infects APK with malicious code using DEX/Manifest patching
 
 **Full description about What is it and How it works:**
+
 https://www.orderofsixangles.com/en/2020/04/07/android-infection-the-new-way.html (EN)
+
 https://www.orderofsixangles.com/ru/2020/07/04/Infecting-android-app-the-new-way.html (RU)
 
 **Please read article berfore use it!**
