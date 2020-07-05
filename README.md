@@ -1,7 +1,5 @@
 # Apk infector Archinome PoC
 
-PoC includes files from https://github.com/avast/apkparser.
-
 Program that infects APK with malicious code using DEX/Manifest patching
 
 **Full description about What is it and How it works:**
@@ -30,3 +28,6 @@ If there are problems make sure that:
 
 If nothing helped, try to play with the `-min-api` parameter when compiling payload classes.
 If nothing worked, then create an issue on github.
+
+
+PoC includes files from https://github.com/avast/apkparser.
