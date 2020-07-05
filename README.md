@@ -1,6 +1,8 @@
 # Apk infector Archinome PoC
 
-What is it and How it works:
+Program that infects APK with malicious code using DEX/Manifest patching
+
+Full description about What is it and How it works:
 
 Receives two args:
 ```
