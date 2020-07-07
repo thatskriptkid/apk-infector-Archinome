@@ -12,7 +12,7 @@ https://www.orderofsixangles.com/ru/2020/07/04/Infecting-android-app-the-new-way
 
 Receives two args:
 ```
-./Archinome path_to_apk output_directory
+./Archinome path_to_apk output_apk_filename
 ```
 
 To inject your malicious code, you should place file named payload.dex with malicious code that follow rules:
@@ -35,3 +35,5 @@ If nothing worked, then create an issue on github.
 
 
 PoC includes files from https://github.com/avast/apkparser.
+
+I am not a Go developer so forgive me for the quality of code
