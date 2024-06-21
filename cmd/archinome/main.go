@@ -14,6 +14,14 @@ import (
 	"os"
 )
 
+func isValidFile(path string) bool {
+	info, err := os.Stat(path)
+	if os.IsNotExist(err) {
+		return false
+	}
+	return !info.IsDir()
+}
+
 func main() {
 
 	//setup logging
@@ -26,6 +34,16 @@ func main() {
 
 	log.SetOutput(logFile)
 
+	if len(os.Args) < 2 {
+		fmt.Printf("Usage:\nmain input.apk output.apk\n")
+		return
+	}
+
+	if !(isValidFile(os.Args[0]) && isValidFile(os.Args[1])) {
+		fmt.Println("Invalid file path")
+		return
+	}
+	
 	manifestPlainFile, err := os.Create(manifest.PlainPath) // create/truncate the file
 	if err != nil {
 		log.Panic("Failed to create AndroidManifest plaintext", err)

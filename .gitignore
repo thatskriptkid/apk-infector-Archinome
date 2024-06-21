@@ -1,3 +1,6 @@
 main
 apks/
 apks/*
+apkinfector.log
+InjectedApp_patched.dex
+.vscode
