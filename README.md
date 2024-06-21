@@ -37,3 +37,10 @@ If nothing worked, then create an issue on github.
 PoC includes files from https://github.com/avast/apkparser.
 
 I am not a Go developer so forgive me for the quality of code
+
+TODO
+
+1. Better project structure/ buildling instruction
+2. Add signing in golang
+3. Add capability to inject frida-gadget
+4. Create anti debug frida gadget according to https://docs.google.com/presentation/d/1BktWJ91ill5iI_-ENzh2Uq14BGIHxxpONzNYybYJIC4/edit#slide=id.p. Add this to project.

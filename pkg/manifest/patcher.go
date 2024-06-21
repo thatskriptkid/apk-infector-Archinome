@@ -1,8 +1,8 @@
 package manifest
 
 import (
+	"github.com/thatskriptkid/apk-infector-Archinome-PoC/internal/injector"
 	"bytes"
-	"common"
 	"encoding/binary"
 	"encoding/xml"
 	"golang.org/x/text/encoding/unicode"
@@ -41,9 +41,9 @@ func patchApplication() ([]byte, int) {
 	}
 
 	// read bytes from binary xml
-	androidManifestRaw, err := ioutil.ReadFile(common.ManifestBinaryPath)
+	androidManifestRaw, err := ioutil.ReadFile(injector.ManifestBinaryPath)
 	if err != nil {
-		log.Panicf("Failed to read %s", common.ManifestBinaryPath)
+		log.Panicf("Failed to read %s", injector.ManifestBinaryPath)
 	}
 
 	log.Printf("Original manifest (binary) size = 0x%0x\n", len(androidManifestRaw))
@@ -258,7 +258,7 @@ func Patch() {
 
 	patchStringTableLen(androidManifestRaw[offsetStringTableLen:])
 
-	common.WriteChanges(androidManifestRaw, common.ManifestBinaryPath)
+	injector.WriteChanges(androidManifestRaw, injector.ManifestBinaryPath)
 }
 
 // Search application name in decoded android manifest

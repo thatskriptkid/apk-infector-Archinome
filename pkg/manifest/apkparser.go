@@ -2,7 +2,7 @@
 package manifest
 
 import (
-	"common"
+	"github.com/thatskriptkid/apk-infector-Archinome-PoC/internal/injector"
 	"fmt"
 	"io"
 	"log"
@@ -33,7 +33,7 @@ func (p *ApkParser) SaveManifestToDisk() {
 	defer file.Close()
 
 	// open output file
-	fo, err := os.Create(common.ManifestBinaryPath)
+	fo, err := os.Create(injector.ManifestBinaryPath)
 	if err != nil {
 		panic(err)
 	}

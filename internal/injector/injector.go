@@ -1,4 +1,4 @@
-package common
+package injector
 
 import (
 	"archive/zip"
