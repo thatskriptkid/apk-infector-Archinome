@@ -48,7 +48,7 @@ func Inject(path string, zipModifiedOutput string) {
 	var injectedAppNewName = "classes" + strconv.Itoa(max) + ".dex"
 
 
-	copy(injectedAppPrevName, zipOutput + "\\" + injectedAppNewName)
+	copy(injectedAppPrevName,  fmt.Sprintf("%s%c%s", zipOutput, os.PathSeparator, injectedAppNewName))
 
 	max +=1
 
@@ -56,15 +56,15 @@ func Inject(path string, zipModifiedOutput string) {
 	var payloadNewName = "classes" + strconv.Itoa(max) + ".dex"
 
 
-	copy(payloadPrevName, zipOutput + "\\" + payloadNewName)
+	copy(payloadPrevName, fmt.Sprintf("%s%c%s",zipOutput, os.PathSeparator, payloadNewName))
 
 	log.Printf("Successfuly injected DEX:" + injectedAppNewName + "," + payloadNewName)
 
 	//replace manifest
-	copy(ManifestBinaryPath, zipOutput + "\\AndroidManifest.xml")
+	copy(ManifestBinaryPath, fmt.Sprintf("%s%c%s", zipOutput, os.PathSeparator, "AndroidManifest.xml"))
 
-	files = append(files[0:], zipOutput + "\\" + injectedAppNewName)
-	files = append(files[0:], zipOutput + "\\" + payloadNewName)
+	files = append(files[0:], fmt.Sprintf("%s%c%s", zipOutput, os.PathSeparator, injectedAppNewName))
+	files = append(files[0:], fmt.Sprintf("%s%c%s", zipOutput, os.PathSeparator, payloadNewName))
 
 	// zip all files
 	fmt.Println("\t--zipping...")
@@ -123,7 +123,7 @@ func addFiles(w *zip.Writer, basePath, baseInZip string) {
 	for _, file := range files {
 		//fmt.Println(basePath + file.Name())
 		if !file.IsDir() {
-			dat, err := os.ReadFile(basePath + "\\" + file.Name())
+			dat, err := os.ReadFile(fmt.Sprintf("%s%c%s", basePath, os.PathSeparator, file.Name()))
 			if err != nil {
 				fmt.Println(err)
 			}
@@ -140,11 +140,11 @@ func addFiles(w *zip.Writer, basePath, baseInZip string) {
 		} else if file.IsDir() {
 
 			// Recurse
-			newBase := basePath + "\\" + file.Name()
+			newBase := fmt.Sprintf("%s%c%s", basePath, os.PathSeparator, file.Name())
 			//fmt.Println("Recursing and Adding SubDir: " + file.Name())
 			//fmt.Println("Recursing and Adding SubDir: " + newBase)
 
-			recPath := baseInZip  + file.Name() + "/"
+			recPath := fmt.Sprintf("%s%s%c", baseInZip, file.Name(), os.PathSeparator)
 			addFiles(w, newBase, recPath)
 		}
 	}

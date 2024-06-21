@@ -35,12 +35,12 @@ func main() {
 	log.SetOutput(logFile)
 
 	if len(os.Args) < 2 {
-		fmt.Printf("Usage:\nmain input.apk output.apk\n")
+		fmt.Println("Usage:\nmain input.apk output.apk")
 		return
 	}
 
-	if !(isValidFile(os.Args[0]) && isValidFile(os.Args[1])) {
-		fmt.Println("Invalid file path")
+	if !(isValidFile(os.Args[1]) && isValidFile(os.Args[2])) {
+		fmt.Printf("Invalid file path %s %s",os.Args[1], os.Args[2] )
 		return
 	}
 	
