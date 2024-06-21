@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"strconv"
 	"strings"
 	"unsafe"
@@ -108,7 +107,7 @@ func ParseXml(r io.Reader, enc ManifestEncoder, resources *ResourceTable) error 
 			}
 
 			// skip line number and unknown 0xFFFFFFFF
-			if _, err = io.CopyN(ioutil.Discard, lm, 2*4); err != nil {
+			if _, err = io.CopyN(io.Discard, lm, 2*4); err != nil {
 				break
 			}
 
@@ -183,7 +182,7 @@ func (x *binxmlParseInfo) parseNsStart(r *io.LimitedReader) error {
 }
 
 func (x *binxmlParseInfo) parseNsEnd(r *io.LimitedReader) error {
-	if _, err := io.CopyN(ioutil.Discard, r, 2*4); err != nil {
+	if _, err := io.CopyN(io.Discard, r, 2*4); err != nil {
 		return fmt.Errorf("error skipping: %s", err.Error())
 	}
 
@@ -202,7 +201,7 @@ func (x *binxmlParseInfo) parseTagStart(r *io.LimitedReader) error {
 		return fmt.Errorf("error reading name idx: %s", err.Error())
 	}
 
-	if _, err := io.CopyN(ioutil.Discard, r, 4); err != nil {
+	if _, err := io.CopyN(io.Discard, r, 4); err != nil {
 		return fmt.Errorf("error skipping flag: %s", err.Error())
 	}
 
@@ -367,7 +366,7 @@ func (x *binxmlParseInfo) parseText(r *io.LimitedReader) error {
 		return fmt.Errorf("error decoding idx: %s", err.Error())
 	}
 
-	if _, err := io.CopyN(ioutil.Discard, r, 2*4); err != nil {
+	if _, err := io.CopyN(io.Discard, r, 2*4); err != nil {
 		return fmt.Errorf("error skipping: %s", err.Error())
 	}
 

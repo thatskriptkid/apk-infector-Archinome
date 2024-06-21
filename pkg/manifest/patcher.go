@@ -6,9 +6,9 @@ import (
 	"encoding/binary"
 	"encoding/xml"
 	"golang.org/x/text/encoding/unicode"
-	"io/ioutil"
 	"log"
 	"path/filepath"
+	"os"
 )
 
 const (
@@ -41,7 +41,7 @@ func patchApplication() ([]byte, int) {
 	}
 
 	// read bytes from binary xml
-	androidManifestRaw, err := ioutil.ReadFile(injector.ManifestBinaryPath)
+	androidManifestRaw, err := os.ReadFile(injector.ManifestBinaryPath)
 	if err != nil {
 		log.Panicf("Failed to read %s", injector.ManifestBinaryPath)
 	}
@@ -123,7 +123,7 @@ func getAppNameOffset() uint32 {
 	//var appNameOff uint32 = 1
 	var pos uint32
 
-	data, err := ioutil.ReadFile(ManifestStringsDmp)
+	data, err := os.ReadFile(ManifestStringsDmp)
 	if err != nil {
 		panic(err)
 	}
@@ -265,7 +265,7 @@ func Patch() {
 func getAppName() string {
 
 	// read manifest to byte array
-	content, err := ioutil.ReadFile(PlainPath)
+	content, err := os.ReadFile(PlainPath)
 	if err != nil {
 		panic(err)
 	}

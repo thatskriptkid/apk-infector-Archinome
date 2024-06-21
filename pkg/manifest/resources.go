@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"log"
 	"math"
 	"strings"
@@ -125,7 +124,7 @@ func ParseResourceTable(r io.Reader) *ResourceTable {
 	totalLen -= uint32(hdrLen)
 	hdrLen -= chunkHeaderSize + 4
 
-	if _, err = io.CopyN(ioutil.Discard, r, int64(hdrLen)); err != nil {
+	if _, err = io.CopyN(io.Discard, r, int64(hdrLen)); err != nil {
 		log.Panic("Failed to read header padding: %s", err.Error())
 	}
 
@@ -168,7 +167,7 @@ func ParseResourceTable(r io.Reader) *ResourceTable {
 }
 
 func (x *ResourceTable) parsePackage(r *io.LimitedReader, hdrLen uint16) error {
-	pkgBlock, err := ioutil.ReadAll(r)
+	pkgBlock, err := io.ReadAll(r)
 	if err != nil {
 		return fmt.Errorf("error reading package block: %s", err.Error())
 	}
@@ -289,7 +288,7 @@ func (x *ResourceTable) parsePackage(r *io.LimitedReader, hdrLen uint16) error {
 			}
 			fallthrough
 		default:
-			_, err = io.CopyN(ioutil.Discard, lm, lm.N)
+			_, err = io.CopyN(io.Discard, lm, lm.N)
 		}
 
 		if err != nil {
@@ -312,7 +311,7 @@ func (x *ResourceTable) parseTypeSpec(r io.Reader, pkg *resourcePackage, group *
 		return fmt.Errorf("Invalid type spec id: %d", id)
 	}
 
-	if _, err := io.CopyN(ioutil.Discard, r, 1+2); err != nil {
+	if _, err := io.CopyN(io.Discard, r, 1+2); err != nil {
 		return fmt.Errorf("Failed to skip padding: %s", err.Error())
 	}
 
@@ -572,7 +571,7 @@ func (x *ResourceTable) parseEntry(r io.Reader, pkg *resourcePackage, typeId uin
 			return nil, fmt.Errorf("Invalid Res_value size: %d!", size)
 		}
 
-		if _, err := io.CopyN(ioutil.Discard, r, 1); err != nil {
+		if _, err := io.CopyN(io.Discard, r, 1); err != nil {
 			return nil, fmt.Errorf("Failed to read entry value res0: %s", err.Error())
 		}
 

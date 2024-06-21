@@ -5,7 +5,6 @@ import (
 	"compress/flate"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"log"
 	"os"
 	"path/filepath"
@@ -116,7 +115,7 @@ func ZipWriter(zipModifiedOutput string) {
 
 func addFiles(w *zip.Writer, basePath, baseInZip string) {
 	// Open the Directory
-	files, err := ioutil.ReadDir(basePath)
+	files, err := os.ReadDir(basePath)
 	if err != nil {
 		fmt.Println(err)
 	}
@@ -124,7 +123,7 @@ func addFiles(w *zip.Writer, basePath, baseInZip string) {
 	for _, file := range files {
 		//fmt.Println(basePath + file.Name())
 		if !file.IsDir() {
-			dat, err := ioutil.ReadFile(basePath + "\\" + file.Name())
+			dat, err := os.ReadFile(basePath + "\\" + file.Name())
 			if err != nil {
 				fmt.Println(err)
 			}

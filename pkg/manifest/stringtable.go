@@ -5,12 +5,12 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"math"
 	"path/filepath"
 	"strings"
 	"unicode/utf16"
 	"unicode/utf8"
+	"os"
 )
 
 const (
@@ -50,7 +50,7 @@ func check(e error) {
 }
 
 func dumpStrings(data []byte) {
-	err := ioutil.WriteFile(ManifestStringsDmp, data, 0644)
+	err := os.WriteFile(ManifestStringsDmp, data, 0644)
 	check(err)
 }
 
@@ -64,7 +64,7 @@ func parseStringTable(r *io.LimitedReader) (stringTable, error) {
 	}
 
 	// skip styles count
-	if _, err = io.CopyN(ioutil.Discard, r, 4); err != nil {
+	if _, err = io.CopyN(io.Discard, r, 4); err != nil {
 		return res, fmt.Errorf("error reading styleCnt: %s", err.Error())
 	}
 
@@ -87,7 +87,7 @@ func parseStringTable(r *io.LimitedReader) (stringTable, error) {
 	}
 
 	// skip styles offset
-	if _, err = io.CopyN(ioutil.Discard, r, 4); err != nil {
+	if _, err = io.CopyN(io.Discard, r, 4); err != nil {
 		return res, fmt.Errorf("error reading styleOffset: %s", err.Error())
 	}
 
@@ -106,7 +106,7 @@ func parseStringTable(r *io.LimitedReader) (stringTable, error) {
 	if remainder < 0 {
 		return res, fmt.Errorf("Wrong string offset (got remainder %d)", remainder)
 	} else if remainder > 0 {
-		if _, err = io.CopyN(ioutil.Discard, r, remainder); err != nil {
+		if _, err = io.CopyN(io.Discard, r, remainder); err != nil {
 			return res, fmt.Errorf("error reading styleArray: %s", err.Error())
 		}
 	}

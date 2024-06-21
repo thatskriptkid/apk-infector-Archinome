@@ -7,10 +7,10 @@ import (
 	"crypto/sha1"
 	"encoding/binary"
 	"hash/adler32"
-	"io/ioutil"
 	"log"
 	"path/filepath"
 	"strings"
+	"os"
 )
 
 
@@ -84,7 +84,7 @@ func patchChecksum(data []byte) {
 
 func Patch() {
 
-	data, err := ioutil.ReadFile(dexPath)
+	data, err := os.ReadFile(dexPath)
 	if err != nil {
 		log.Panicf("DEX Failed to read %s", dexPath)
 	}
