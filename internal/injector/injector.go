@@ -2,7 +2,7 @@ package injector
 
 import (
 	"archive/zip"
-	"compress/flate"
+	//"compress/flate"
 	"fmt"
 	"io"
 	"log"
@@ -63,9 +63,6 @@ func Inject(path string, zipModifiedOutput string) {
 	//replace manifest
 	copy(ManifestBinaryPath, fmt.Sprintf("%s%c%s", zipOutput, os.PathSeparator, "AndroidManifest.xml"))
 
-	files = append(files[0:], fmt.Sprintf("%s%c%s", zipOutput, os.PathSeparator, injectedAppNewName))
-	files = append(files[0:], fmt.Sprintf("%s%c%s", zipOutput, os.PathSeparator, payloadNewName))
-
 	// zip all files
 	fmt.Println("\t--zipping...")
 	ZipWriter(zipModifiedOutput)
@@ -92,63 +89,120 @@ func ZipWriter(zipModifiedOutput string) {
 	defer outFile.Close()
 
 	// Create a new zip archive.
-	w := zip.NewWriter(outFile)
-
+	zipWriter := zip.NewWriter(outFile)
+	defer zipWriter.Close()
+	
 	// Register a custom Deflate compressor.
-	w.RegisterCompressor(zip.Deflate, func(out io.Writer) (io.WriteCloser, error) {
-		return flate.NewWriter(out, flate.BestCompression)
+	// w.RegisterCompressor(
+	// 	//zip.Deflate,
+	// 	zip.Store, 
+	// 	func(out io.Writer) (io.WriteCloser, error) {
+	// 	//return flate.NewWriter(out, flate.BestCompression)
+	// 	return flate.NewWriter(out, flate.NoCompression)
+	// })
+
+	// Добавляем файлы из каталога в ZIP архив
+	err = filepath.Walk(baseFolder, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+
+		if info.IsDir() {
+			return nil
+		}
+
+		return addFileToZip(zipWriter, path, baseFolder)
 	})
 
-	// Add some files to the archive.
-	addFiles(w, baseFolder, "")
-
 	if err != nil {
 		fmt.Println(err)
 	}
 
-	// Make sure to check the error on Close.
-	err = w.Close()
-	if err != nil {
-		fmt.Println(err)
-	}
 }
 
-func addFiles(w *zip.Writer, basePath, baseInZip string) {
-	// Open the Directory
-	files, err := os.ReadDir(basePath)
+func addFileToZip(zipWriter *zip.Writer, filename, baseDir string) error {
+	// Открываем исходный файл
+	fileToZip, err := os.Open(filename)
 	if err != nil {
-		fmt.Println(err)
+		return fmt.Errorf("failed to open file %s: %w", filename, err)
+	}
+	defer fileToZip.Close()
+
+	// Получаем относительный путь файла для записи в ZIP архиве
+	relPath, err := filepath.Rel(baseDir, filename)
+	if err != nil {
+		return fmt.Errorf("failed to get relative path for %s: %w", filename, err)
 	}
 
-	for _, file := range files {
-		//fmt.Println(basePath + file.Name())
-		if !file.IsDir() {
-			dat, err := os.ReadFile(fmt.Sprintf("%s%c%s", basePath, os.PathSeparator, file.Name()))
-			if err != nil {
-				fmt.Println(err)
-			}
-
-			// Add some files to the archive.
-			f, err := w.Create(baseInZip + file.Name())
-			if err != nil {
-				fmt.Println(err)
-			}
-			_, err = f.Write(dat)
-			if err != nil {
-				fmt.Println(err)
-			}
-		} else if file.IsDir() {
-
-			// Recurse
-			newBase := fmt.Sprintf("%s%c%s", basePath, os.PathSeparator, file.Name())
-			//fmt.Println("Recursing and Adding SubDir: " + file.Name())
-			//fmt.Println("Recursing and Adding SubDir: " + newBase)
-
-			recPath := fmt.Sprintf("%s%s%c", baseInZip, file.Name(), os.PathSeparator)
-			addFiles(w, newBase, recPath)
-		}
+	// Получаем информацию о файле
+	info, err := fileToZip.Stat()
+	if err != nil {
+		return fmt.Errorf("failed to get file info for %s: %w", filename, err)
 	}
+
+	// Создаем заголовок файла в ZIP архиве
+	header, err := zip.FileInfoHeader(info)
+	if err != nil {
+		return fmt.Errorf("failed to create file header for %s: %w", filename, err)
+	}
+	header.Name = relPath
+
+	// Проверяем, является ли файл библиотекой .so и устанавливаем метод хранения
+	if filepath.Ext(filename) == ".so" {
+		header.Method = zip.Store
+	} else {
+		header.Method = zip.Deflate
+	}
+
+	// Создаем запись в ZIP архиве
+	writer, err := zipWriter.CreateHeader(header)
+	if err != nil {
+		return fmt.Errorf("failed to create zip header for %s: %w", filename, err)
+	}
+
+	// Копируем содержимое файла в запись ZIP архива
+	if _, err := io.Copy(writer, fileToZip); err != nil {
+		return fmt.Errorf("failed to copy file content for %s: %w", filename, err)
+	}
+
+	return nil
 }
+// func addFiles(w *zip.Writer, basePath, baseInZip string) {
+// 	// Open the Directory
+// 	files, err := os.ReadDir(basePath)
+// 	if err != nil {
+// 		fmt.Println(err)
+// 	}
+
+// 	for _, file := range files {
+// 		//fmt.Println(basePath + file.Name())
+// 		if !file.IsDir() {
+// 			dat, err := os.ReadFile(fmt.Sprintf("%s%c%s", basePath, os.PathSeparator, file.Name()))
+// 			if err != nil {
+// 				fmt.Println(err)
+// 			}
+
+// 			// Add some files to the archive.
+// 			f, err := w.Create(baseInZip + file.Name())
+// 			if err != nil {
+// 				fmt.Println(err)
+// 			}
+// 			_, err = f.Write(dat)
+// 			if err != nil {
+// 				fmt.Println(err)
+// 			}
+// 		} else if file.IsDir() {
+
+// 			// Recurse
+// 			newBase := fmt.Sprintf("%s%c%s", basePath, os.PathSeparator, file.Name())
+// 			//fmt.Println("Recursing and Adding SubDir: " + file.Name())
+// 			//fmt.Println("Recursing and Adding SubDir: " + newBase)
+
+// 			recPath := fmt.Sprintf("%s%s%c", baseInZip, file.Name(), os.PathSeparator)
+// 			addFiles(w, newBase, recPath)
+// 		}
+// 	}
+// }
 
 
 

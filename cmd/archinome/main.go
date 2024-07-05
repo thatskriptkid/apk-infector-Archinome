@@ -5,13 +5,14 @@
 package main
 
 import (
-	"github.com/thatskriptkid/apk-infector-Archinome-PoC/pkg/manifest"
-	"github.com/thatskriptkid/apk-infector-Archinome-PoC/pkg/dex"
-	"github.com/thatskriptkid/apk-infector-Archinome-PoC/internal/injector"
 	"encoding/xml"
 	"fmt"
 	"log"
 	"os"
+
+	"github.com/thatskriptkid/apk-infector-Archinome-PoC/internal/injector"
+	"github.com/thatskriptkid/apk-infector-Archinome-PoC/pkg/dex"
+	"github.com/thatskriptkid/apk-infector-Archinome-PoC/pkg/manifest"
 )
 
 func isValidFile(path string) bool {
@@ -39,11 +40,11 @@ func main() {
 		return
 	}
 
-	if !(isValidFile(os.Args[1]) && isValidFile(os.Args[2])) {
-		fmt.Printf("Invalid file path %s %s",os.Args[1], os.Args[2] )
-		return
-	}
-	
+	// if !(isValidFile(os.Args[1]) && isValidFile(os.Args[2])) {
+	// 	fmt.Printf("Invalid file path %s %s", os.Args[1], os.Args[2])
+	// 	return
+	// }
+
 	manifestPlainFile, err := os.Create(manifest.PlainPath) // create/truncate the file
 	if err != nil {
 		log.Panic("Failed to create AndroidManifest plaintext", err)
@@ -55,7 +56,7 @@ func main() {
 
 	fmt.Println("Parsing APK...")
 	manifest.ParseApk(os.Args[1], enc)
-	
+
 	//close before reading
 	manifestPlainFile.Close()
 
