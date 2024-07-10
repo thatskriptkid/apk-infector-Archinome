@@ -125,7 +125,7 @@ func ParseResourceTable(r io.Reader) *ResourceTable {
 	hdrLen -= chunkHeaderSize + 4
 
 	if _, err = io.CopyN(io.Discard, r, int64(hdrLen)); err != nil {
-		log.Panic("Failed to read header padding: %s", err.Error())
+		log.Panicf("Failed to read header padding: %s", err.Error())
 	}
 
 	var len uint32

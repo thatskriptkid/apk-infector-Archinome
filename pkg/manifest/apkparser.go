@@ -142,7 +142,7 @@ func (p *ApkParser) parseResources() {
 	}
 
 	if err := resourcesFile.Open(); err != nil {
-		log.Panic("Failed to open resources.arsc: %s", err.Error())
+		log.Panicf("Failed to open resources.arsc: %s", err.Error())
 	}
 	defer resourcesFile.Close()
 	p.resources = ParseResourceTable(resourcesFile)
