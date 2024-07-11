@@ -2,11 +2,11 @@
 package manifest
 
 import (
-	"github.com/thatskriptkid/apk-infector-Archinome-PoC/internal/injector"
 	"fmt"
 	"io"
 	"log"
 	"os"
+	"github.com/thatskriptkid/apk-infector-Archinome-PoC/internal/utils"
 )
 
 type ApkParser struct {
@@ -33,7 +33,7 @@ func (p *ApkParser) SaveManifestToDisk() {
 	defer file.Close()
 
 	// open output file
-	fo, err := os.Create(injector.ManifestBinaryPath)
+	fo, err := os.Create(utils.ManifestBinaryPath)
 	if err != nil {
 		panic(err)
 	}
@@ -107,6 +107,12 @@ func ParseApkWithZip(zip *ZipReader, encoder ManifestEncoder) {
 
 	fmt.Println("\t--Parsing manifest...")
 	apkParser.ParseXml("AndroidManifest.xml")
+
+	// for _, item := range apkParser.zip.File {
+	// 	if strings.HasPrefix(item.Name, "classes") {
+	// 		fmt.Printf("apk item = %s\n", item.Name)
+	// 	}
+	// }
 
 	apkParser.SaveManifestToDisk()
 

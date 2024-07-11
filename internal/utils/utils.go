@@ -1,4 +1,4 @@
-package injector
+package utils
 
 import (
 	"log"
@@ -7,6 +7,7 @@ import (
 )
 
 var ManifestBinaryPath, _ = filepath.Abs("AndroidManifest.xml")
+var OldAppNameNormalized string
 
 func WriteChanges(raw []byte, path string) {
 	//Open a new file for writing only
@@ -27,3 +28,10 @@ func WriteChanges(raw []byte, path string) {
 	}
 }
 
+func isValidFile(path string) bool {
+	info, err := os.Stat(path)
+	if os.IsNotExist(err) {
+		return false
+	}
+	return !info.IsDir()
+}

