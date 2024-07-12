@@ -121,9 +121,13 @@ func Patch_app_modifier(path string) {
 			}
 
 			binary.LittleEndian.PutUint32(data[classDefOffset+4:], newAccessFlags)
-		
+			
+			patchSignature(data[0:])
+			patchChecksum(data[0:])
+
 			// Сохранение модифицированного DEX-файла
-			//fmt.Printf("rewritten = %s\n", path)
+			log.Printf("Patch final to public in Application class %s \n", typeName)
+
 			outputFilename := path
 			err = os.WriteFile(outputFilename, data, 0644)
 			if err != nil {
