@@ -10,9 +10,20 @@ https://www.orderofsixangles.com/ru/2020/07/04/Infecting-android-app-the-new-way
 
 **Please read article berfore use it!**
 
-Receives two args:
+# Prerequisite
+
+Install and add to PATH
+
+1. Android SDK
+2. zipalign
+3. apksigner 
+
+# Usage
+
+Usage:
 ```
 ./Archinome input_apk output_apk
+./build.sh
 ```
 
 To inject your malicious code, you should place file named payload.dex with malicious code that follow rules:
@@ -33,14 +44,13 @@ If there are problems make sure that:
 If nothing helped, try to play with the `-min-api` parameter when compiling payload classes.
 If nothing worked, then create an issue on github.
 
-
 PoC includes files from https://github.com/avast/apkparser.
 
 I am not a Go developer so forgive me for the quality of code
 
-TODO
+# TODO
 
-1. Better project structure/ buildling instruction
-2. Add signing in golang
-3. Add capability to inject frida-gadget
-4. Create anti debug frida gadget according to https://docs.google.com/presentation/d/1BktWJ91ill5iI_-ENzh2Uq14BGIHxxpONzNYybYJIC4/edit#slide=id.p. Add this to project.
+1. Add signing in golang
+2. Add capability to inject frida-gadget
+3. Create anti debug frida gadget according to https://docs.google.com/presentation/d/1BktWJ91ill5iI_-ENzh2Uq14BGIHxxpONzNYybYJIC4/edit#slide=id.p. Add this to project.
+4. Get rid of Manifest unpacking
