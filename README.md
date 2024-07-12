@@ -1,6 +1,6 @@
 # Apk infector Archinome PoC
 
-Program that infects APK with malicious code using DEX/Manifest patching
+This program infects APK with malicious code using DEX/Manifest patching
 
 **Full description about What is it and How it works:**
 
@@ -12,7 +12,7 @@ https://www.orderofsixangles.com/ru/2020/07/04/Infecting-android-app-the-new-way
 
 Receives two args:
 ```
-./Archinome path_to_apk output_apk_filename
+./Archinome input_apk output_apk
 ```
 
 To inject your malicious code, you should place file named payload.dex with malicious code that follow rules:
@@ -21,7 +21,7 @@ To inject your malicious code, you should place file named payload.dex with mali
 
 2. Method `public void executePayload()`
 
-After you infect apk please sign it.
+After you infect apk please align and sign it. You can use `build.sh` script for it.
 
 If there are problems make sure that:
    1. The original application works
