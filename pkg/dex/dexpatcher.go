@@ -110,7 +110,7 @@ func Patch_app_modifier(path string) {
 		if typeName == utils.OldAppNameNormalized {
 			//fmt.Printf("typename : %s | accessFlags = %d\n", typeName, accessFlags)
 
-			newAccessFlags := uint32(0x1) // например, PUBLIC
+			newAccessFlags := uint32(Dex_ClassAccessFlags__Public)
 		
 			// Запись изменений обратно в DEX данные
 			classDefOffset := dexFile.Header.ClassDefsOff + uint32(i*32) // 32 - размер ClassDefItem

