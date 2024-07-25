@@ -1,6 +1,6 @@
 # Apk infector Archinome PoC
 
-This program infects APK with malicious code using DEX/Manifest patching
+This program infects APK with malicious code using DEX/Manifest patching. It also can be used to inject frida gadget for using frida on non-rooted device
 
 **Full description about What is it and How it works:**
 
@@ -20,13 +20,21 @@ Install and add to PATH
 
 # Usage
 
-Usage:
 ```
-./Archinome input_apk output_apk
+Usage:
+main input.apk output.apk -o [option]
+options:
+        1 - custom payload
+        2 - frida inject
+```
+
+zipalign and siging with test key:
+
+```
 ./build.sh
 ```
 
-To inject your malicious code, you should place file named payload.dex with malicious code that follow rules:
+To inject your malicious code, you should place file named payload_custom.dex with malicious code that follow rules:
 
 1. Class name within payload.dex - `aaaaaaaaaaaa.payload`
 
@@ -51,6 +59,5 @@ I am not a Go developer so forgive me for the quality of code
 # TODO
 
 1. Add signing in golang
-2. Add capability to inject frida-gadget
-3. Create anti debug frida gadget according to https://docs.google.com/presentation/d/1BktWJ91ill5iI_-ENzh2Uq14BGIHxxpONzNYybYJIC4/edit#slide=id.p. Add this to project.
-4. Get rid of Manifest unpacking
+2. Create anti debug frida gadget according to https://docs.google.com/presentation/d/1BktWJ91ill5iI_-ENzh2Uq14BGIHxxpONzNYybYJIC4/edit#slide=id.p. Add this to project.
+3. Get rid of Manifest unpacking
