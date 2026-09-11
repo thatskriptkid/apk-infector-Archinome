@@ -32,6 +32,7 @@ Environment knobs:
 
 ```
 ARCHINOME_ADD_INTERNET=1                 add android.permission.INTERNET to the manifest
+ARCHINOME_GADGET_PORT=27043               listen port of the frida gadget (vector 2, default 27042)
                                          (vector 2 needs it on hosts that don't declare it)
 ARCHINOME_ASSETS_VECTOR=appfactory|provider|receiver
                                          manifest carrier used by vector 8

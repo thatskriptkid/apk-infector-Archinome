@@ -72,7 +72,10 @@ def note_for(d, v=None):
     if v == 2 and d.get("ADDED_INTERNET_PERMISSION") == "1":
         extra += "харнесс добавил android.permission.INTERNET (у хоста его нет); "
     if v == 2 and d.get("GADGET_LISTENED", "0") not in ("", "0"):
-        extra += "gadget подтверждён своей строкой в logcat (порт 27042 уже не отвечал); "
+        gport = os.environ.get("GADGET_PORT", "27042")
+        extra += f"gadget подтверждён своей строкой в logcat (порт {gport} уже не отвечал); "
+    if v == 2 and d.get("FREED_27042") == "1":
+        extra += "харнесс освободил порт 27042 от чужого frida-server; "
     if v == 7 and d.get("LEARN_HOST_LIB", "none") not in ("", "none"):
         extra += f"host-либа выбрана замером maps: {d['LEARN_HOST_LIB']}; "
     return extra + reason(d)

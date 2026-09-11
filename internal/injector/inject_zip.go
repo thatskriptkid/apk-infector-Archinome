@@ -249,9 +249,25 @@ const gadgetConfigName = "libfrida-gadget.config.so"
 //     app domains without it, and the gadget then aborts ("Unable to create
 //     socket: Operation not permitted"). For hosts without INTERNET use script
 //     interaction instead, which never touches the network.
+//   - the port is not a constant in practice: 27042 is also frida-server's
+//     default, so on a device where a server is already running (started by
+//     another tool, or a stale instance that listens but no longer speaks the
+//     protocol) the gadget cannot accept a connection and every honest OK turns
+//     into "payload did not run". ARCHINOME_GADGET_PORT moves the listener
+//     without touching any other component; matrix/harness runs set it together
+//     with their own probe port so the two never disagree.
+func gadgetListenPort() int {
+	if v := strings.TrimSpace(os.Getenv("ARCHINOME_GADGET_PORT")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n < 65536 {
+			return n
+		}
+	}
+	return 27042
+}
+
 func fridaGadgetConfig() []byte {
-	return []byte(`{"interaction":{"type":"listen","address":"127.0.0.1","port":27042,` +
-		`"on_port_conflict":"fail","on_load":"resume"}}`)
+	return []byte(fmt.Sprintf(`{"interaction":{"type":"listen","address":"127.0.0.1","port":%d,`+
+		`"on_port_conflict":"fail","on_load":"resume"}}`, gadgetListenPort()))
 }
 
 type gadgetABI struct {

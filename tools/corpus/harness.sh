@@ -19,7 +19,8 @@
 #                 ALIGN_FAIL | SIGN_FAIL | SETUP_FAIL | NA_NO_INTERNET
 #
 # Вектор 2 (frida) проверяется не по лог-тегу, а по интерфейсу самого gadget'а:
-# frida-ps -H 127.0.0.1:27042 должен показать ровно один процесс Gadget.
+# frida-ps -H 127.0.0.1:<порт gadget'а> должен показать ровно один процесс Gadget
+# (27042 по умолчанию, GADGET_PORT — если 27042 занят чужим frida-server).
 # ВАЖНО: frida-server по умолчанию слушает тот же 27042 — перед прогоном вектора 2
 # уведи его (frida-server -l 127.0.0.1:27099), иначе проверка попадёт в сервер.
 # Если у хоста нет android.permission.INTERNET, listen-режим gadget'а не может
@@ -38,6 +39,8 @@
 #   BUILD_TOOLS  каталог build-tools (aapt2/zipalign/apksigner/d8)
 #   CORPUS_DIR   каталог корпуса, в нём же создаётся work/ (по умолчанию
 #                каталог самого скрипта)
+#   GADGET_PORT  порт gadget'а вектора 2 (по умолчанию 27042). Уводить нужно тогда,
+#                когда 27042 занят чужим frida-server: он слушает там по умолчанию.
 set -u
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -50,6 +53,16 @@ KS="${KS:-$REPO/my-release-key.jks}"
 KEY_ALIAS="${KEY_ALIAS:-my-key-alias-2}"
 C="${CORPUS_DIR:-$HERE}"
 W="$C/work"; mkdir -p "$W"
+
+# Порт gadget'а (вектор 2). 27042 — дефолт Frida и ОДНОВРЕМЕННО дефолт
+# frida-server: если на устройстве уже поднят сервер (его запускает соседний
+# инструмент, а бывает и «зависший» экземпляр, который слушает, но по протоколу
+# не отвечает), gadget не примет соединение, и честный OK вырождается в
+# «payload не исполнен». Поэтому порт один и тот же на всех трёх шагах —
+# инжект (ARCHINOME_GADGET_PORT), проброс (adb forward) и проверка (frida-ps) —
+# и его можно увести от чужого сервера: GADGET_PORT=27043 bash harness.sh ...
+GPORT="${GADGET_PORT:-27042}"
+export ARCHINOME_GADGET_PORT="$GPORT"
 
 # Пароль — ТОЛЬКО из окружения. Не задан -> выходим с явной ошибкой, чтобы
 # прогон нельзя было принять за настоящий результат.
@@ -173,6 +186,33 @@ if [ $IRC -eq 0 ] && ! grep -qa 'Failure' "$INS_RAW"; then echo "INSTALL=ok"; el
   echo "INSTALL=fail"; echo "RESULT=INSTALL_FAIL"; exit 0; fi
 
 # ---- launch + observe ------------------------------------------------------
+# Вектор 2: порт 27042 принадлежит самому gadget'у (libfrida-gadget.config.so,
+# on_port_conflict=fail). Если его уже занял чужой frida-server — его поднимает
+# соседний инструмент, и в этом окружении он появлялся сам, в том числе
+# «зависший» экземпляр, который слушает, но по протоколу не отвечает, — gadget
+# не примет соединение, и честный OK вырождается в NO_PAYLOAD. Освобождаем порт
+# ДО запуска хоста: после запуска на 27042 висит уже сам gadget, и проверка
+# «порт занят» стала бы ложной (проверено: ложные NA_PORT_27042_BUSY на 4 хостах).
+if [ "$TAG" = "GADGET_CHECK" ]; then
+  P27042=$(adb shell "ss -ltn 2>/dev/null | grep -c \":${GPORT} \"" | tr -d '\r')
+  if [ "${P27042:-0}" -gt 0 ]; then
+    # frida-server называет процесс по имени файла (frida-server-17.18.0), поэтому
+    # pidof frida-server его не находит и старый kill был пустышкой: берём процесс
+    # по полной командной строке. Сокет освобождается не мгновенно — ждём до 10 с.
+    adb shell 'su -c "pkill -9 -f frida-server"' >/dev/null 2>&1
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+      P27042=$(adb shell "ss -ltn 2>/dev/null | grep -c \":${GPORT} \"" | tr -d '\r')
+      [ "${P27042:-0}" -eq 0 ] && break
+      sleep 1
+    done
+    echo "FREED_${GPORT}=$([ "${P27042:-0}" -eq 0 ] && echo 1 || echo 0)"
+    if [ "${P27042:-0}" -gt 0 ]; then
+      echo "INJECT_MSG=порт $GPORT занят чужим слушателем и не освободился: проверка вектора 2 недостоверна, повтори с GADGET_PORT=<свободный порт>"
+      echo "RESULT=NA_PORT_BUSY"
+      exit 0
+    fi
+  fi
+fi
 adb shell am force-stop "$PKG" >/dev/null 2>&1
 adb logcat -c >/dev/null 2>&1
 adb shell monkey -p "$PKG" -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1
@@ -191,7 +231,8 @@ LOG=$(adb logcat -d 2>/dev/null)
 # The injected wrapper only calls System.loadLibrary("frida-gadget"); nothing
 # logs anything, and a gadget that cannot create its socket aborts the host on
 # the spot. The only honest check is the gadget itself: frida-server compatible,
-# a single process named Gadget, listening on 27042. That needs the host to hold
+# a single process named Gadget, listening on the gadget port (27042 by default,
+# GADGET_PORT otherwise). That needs the host to hold
 # android.permission.INTERNET - the platform denies socket creation to app
 # domains without it, which is exactly how the gadget dies. The harness therefore
 # sets ARCHINOME_ADD_INTERNET=1 during injection whenever the host does not
@@ -206,13 +247,14 @@ if [ "$TAG" = "GADGET_CHECK" ]; then
     adb shell am force-stop "$PKG" >/dev/null 2>&1
     exit 0
   fi
-  adb forward tcp:27042 tcp:27042 >/dev/null 2>&1
-  GADGET_LINES=$("${FRIDA_BIN:-frida-ps}" -H 127.0.0.1:27042 2>/dev/null | tr '\n' '|' | cut -c1-200)
-  GADGET_HITS=$("${FRIDA_BIN:-frida-ps}" -H 127.0.0.1:27042 2>/dev/null | awk 'NR>1 {print $2}' | grep -c '^Gadget$')
+  adb forward "tcp:$GPORT" "tcp:$GPORT" >/dev/null 2>&1
+  GADGET_LINES=$("${FRIDA_BIN:-frida-ps}" -H "127.0.0.1:$GPORT" 2>/dev/null | tr '\n' '|' | cut -c1-200)
+  GADGET_HITS=$("${FRIDA_BIN:-frida-ps}" -H "127.0.0.1:$GPORT" 2>/dev/null | awk 'NR>1 {print $2}' | grep -c '^Gadget$')
   # frida-server тоже по умолчанию слушает 27042: если на порту он, ответ содержит
+  # (проверка ловит это и при выбранном GADGET_PORT)
   # весь список процессов устройства, и вердикт нельзя выдавать как «gadget не встал»
-  GADGET_OTHER=$("${FRIDA_BIN:-frida-ps}" -H 127.0.0.1:27042 2>/dev/null | awk 'NR>1' | wc -l | tr -d ' ')
-  adb forward --remove tcp:27042 >/dev/null 2>&1
+  GADGET_OTHER=$("${FRIDA_BIN:-frida-ps}" -H "127.0.0.1:$GPORT" 2>/dev/null | awk 'NR>1' | wc -l | tr -d ' ')
+  adb forward --remove "tcp:$GPORT" >/dev/null 2>&1
   # Процесс хоста может умереть раньше, чем мы постучимся в порт: часть хостов
   # падает в собственных потоках через секунду после старта (com.chess.clock -
   # SIGILL в NDK MediaCodec_), часть является виджет-приложениями. Тогда порта
@@ -221,18 +263,18 @@ if [ "$TAG" = "GADGET_CHECK" ]; then
   # исполнился в процессе хоста, и это не слабее проверки порта: её печатает
   # gadget внутри приложения, а не frida-server (у того свой процесс и своя
   # область logcat). Без этого различия честный OK уходил в NO_PAYLOAD.
-  GADGET_LISTENED=$(echo "$LOG" | grep -acE 'Frida *: *Listening on 127\.0\.0\.1 TCP port 27042')
+  GADGET_LISTENED=$(echo "$LOG" | grep -acE "Frida *: *Listening on 127\.0\.0\.1 TCP port ${GPORT}")
   echo "PAYLOAD=$GADGET_HITS"
   echo "GADGET_LISTENED=$GADGET_LISTENED"
   echo "PAYLOAD_LINES=$GADGET_LINES"
   echo "CRASH=$(echo "$LOG" | grep -acE 'Failed to start|Abort message')"
   if [ "$GADGET_HITS" -eq 0 ] && [ "${GADGET_OTHER:-0}" -gt 2 ]; then
-    echo "FATAL_NOTE=на 27042 отвечает не gadget, а frida-server (процессов $GADGET_OTHER): уведи сервер на другой порт (frida-server -l 127.0.0.1:27099) и повтори"
+    echo "FATAL_NOTE=на $GPORT отвечает не gadget, а frida-server (процессов $GADGET_OTHER): проверь, что gadget слушает именно $GPORT (ARCHINOME_GADGET_PORT), и повтори"
   elif [ "$GADGET_HITS" -eq 0 ]; then
     # gadget не ответил: без этого текста прогон неотличим от «инжект не сработал»
     ALIVE_NOTE=нет
     [ -n "$PID" ] && [ "$PID" != none ] && ALIVE_NOTE=да
-    echo "FATAL_NOTE=gadget не ответил на 27042: процессов в frida-ps=${GADGET_OTHER:-?}, ответ='${GADGET_LINES:-пусто}', процесс жив=$ALIVE_NOTE; logcat=$(echo "$LOG" | grep -aiE 'frida|gadget|Abort message|Failed to start' | head -2 | tr '\n' '|' | cut -c1-220)"
+    echo "FATAL_NOTE=gadget не ответил на $GPORT: процессов в frida-ps=${GADGET_OTHER:-?}, ответ='${GADGET_LINES:-пусто}', процесс жив=$ALIVE_NOTE; logcat=$(echo "$LOG" | grep -aiE 'frida|gadget|Abort message|Failed to start' | head -2 | tr '\n' '|' | cut -c1-220)"
   else
     echo "FATAL_NOTE=$(echo "$LOG" | grep -aE 'Failed to start|Abort message' | head -2 | tr '\n' '|' | cut -c1-300)"
   fi
