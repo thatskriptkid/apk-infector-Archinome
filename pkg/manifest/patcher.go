@@ -37,7 +37,16 @@ func WrapperClassName() string { return newAppNameUTF8 }
 // stub's placeholder base class to exactly this name: an android:name written
 // relative (".MyApp") must be resolved against the manifest package, otherwise
 // the renamed base class does not exist and ART cannot load the wrapper.
+// manifestAppAdded is set when the host manifest had no <application
+// android:name> and the wrapper reference was appended by the ADD path. In that
+// case there is no host Application class to subclass, so the wrapper extends
+// the framework android.app.Application instead.
+var manifestAppAdded bool
+
 func HostAppClassName() string {
+	if manifestAppAdded {
+		return "android.app.Application"
+	}
 	if OldAppNameUTF8 == "" {
 		return ""
 	}
@@ -50,15 +59,20 @@ func HostAppClassName() string {
 
 var PlainPath, _ = filepath.Abs("AndroidManifest_plaintext.xml")
 
-func patchApplication() ([]byte, int) {
+func patchApplication() ([]byte, int, bool) {
 
 	log.Printf("Getting original application name...")
 	OldAppNameUTF8 = getAppName()
 	log.Printf("Original applciation name = %s\n", OldAppNameUTF8)
 
 	if OldAppNameUTF8 == "" {
-		log.Panic("Application name wasn't found")
-		//TODO if not found - we should add our
+		// The host has no <application android:name>: there is no host
+		// Application class for the wrapper to subclass, so the wrapper
+		// extends android.app.Application and we add android:name pointing
+		// at the wrapper itself.
+		log.Printf("Application name wasn't found -> ADD path (android:name=%s)", newAppNameUTF8)
+		manifestAppAdded = true
+		return addApplicationName(), 0, true
 	}
 
 	// read bytes from binary xml
@@ -128,7 +142,93 @@ func patchApplication() ([]byte, int) {
 
 	}
 
-	return androidManifestRawNew, lenDiff
+	return androidManifestRawNew, lenDiff, false
+}
+
+// addApplicationName appends android:name (0x01010003) to the <application>
+// element, pointing at the wrapper class. Modeled on the "attribute ABSENT"
+// branch of PatchAppComponentFactory: grow the string pool with the class
+// string, grow the element by one 20-byte attribute (size +20 at +4, attrCount
+// +1 at +28, the attribute inserted at appStart+appSize) and fix the AXML
+// total size. No new attribute names are invented: 0x01010003 ("name") is
+// already in every resource map.
+func addApplicationName() []byte {
+	data, err := os.ReadFile(utils.ManifestBinaryPath)
+	if err != nil {
+		log.Panicf("Failed to read %s: %v", utils.ManifestBinaryPath, err)
+	}
+
+	pool := parseStringPool(data)
+	androidNs := pool.indexOf(data, androidNamespaceURI)
+	if androidNs < 0 {
+		log.Panic("android namespace URI not found in string pool")
+	}
+	resIds, resMapOff, resMapSizeOrig := readResMap(data)
+	_ = resMapOff
+	_ = resMapSizeOrig
+
+	root := firstTagStart(data)
+	if root < 0 {
+		log.Panic("no <manifest> root tag found")
+	}
+	appStart := -1
+	for _, c := range childElements(data, root) {
+		if elementName(pool, data, c) == "application" {
+			appStart = c.startOff
+			break
+		}
+	}
+	if appStart < 0 {
+		log.Panic("<application> not found")
+	}
+
+	nameStrIdx := indexOfU32(resIds, resIDName)
+	if nameStrIdx < 0 {
+		log.Panic("'name' attribute resource id (0x01010003) not found in resource map")
+	}
+
+	// Append the wrapper class descriptor to the string pool.
+	classStrIdx := uint32(pool.stringCount)
+	oldDataSize := pool.size - pool.stringsStart
+	acc := oldDataSize
+	var newOffsetBytes, newStringBytes []byte
+	enc := encodeString(pool.flags, newAppNameUTF8)
+	newOffsetBytes = append(newOffsetBytes, u32bytes(uint32(acc))...)
+	newStringBytes = append(newStringBytes, enc...)
+	acc += len(enc)
+
+	newStringCount := pool.stringCount + 1
+	newStringsStart := pool.stringsStart + 4
+	newPoolSize := pool.size + len(newOffsetBytes) + len(newStringBytes)
+	if pad := (4 - newPoolSize%4) % 4; pad != 0 {
+		newStringBytes = append(newStringBytes, make([]byte, pad)...)
+		newPoolSize += pad
+	}
+	newTotal := len(data) + (newPoolSize - pool.size)
+
+	edits := []axEdit{
+		{pool.off + 4, u32bytes(uint32(newPoolSize)), true},
+		{pool.off + 8, u32bytes(uint32(newStringCount)), true},
+		{pool.off + 20, u32bytes(uint32(newStringsStart)), true},
+		{pool.off + 28 + pool.stringCount*4, newOffsetBytes, false},
+		{pool.off + pool.size, newStringBytes, false},
+	}
+
+	attrBytes := make([]byte, 20)
+	putAttr(attrBytes, 0, uint32(androidNs), uint32(nameStrIdx), classStrIdx, 0x03, classStrIdx)
+	appSize := int(leU32(data, appStart+4))
+	appAttrCount := int(leU16(data, appStart+28))
+	newTotal += 20
+	edits = append(edits,
+		axEdit{appStart + 4, u32bytes(uint32(appSize + 20)), true},
+		axEdit{appStart + 28, u16bytes(uint16(appAttrCount + 1)), true},
+		axEdit{appStart + appSize, attrBytes, false},
+	)
+
+	edits = append(edits, axEdit{axmlSizeOff, u32bytes(uint32(newTotal)), true})
+	out := applyEdits(data, newTotal, edits)
+	log.Printf("ADD android:name=%s into <application> (%d -> %d bytes)", newAppNameUTF8, len(data), len(out))
+	return out
 }
 
 // we should find from what offset in StringOffsets
@@ -213,7 +313,15 @@ func patchStringTableLen(data []byte) {
 
 func Patch() {
 
-	var androidManifestRaw, lenDiff = patchApplication()
+	var androidManifestRaw, lenDiff, added = patchApplication()
+
+	if added {
+		// ADD path: no existing string moved, so the offset table and the
+		// string-table length are already correct. addApplicationName wrote
+		// the finished image.
+		utils.WriteChanges(androidManifestRaw, utils.ManifestBinaryPath)
+		return
+	}
 
 	log.Printf("New manifest len = 0x%0x\n", len(androidManifestRaw))
 

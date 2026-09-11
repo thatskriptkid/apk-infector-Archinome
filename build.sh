@@ -19,10 +19,13 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
-# Подписывание APK-файла
-# пароль keystore вычищен из истории
+# Подписывание APK-файла (пароль keystore не хранится в репозитории: задайте
+# APKSIGNER_PASS и передайте его как --ks-pass env:APKSIGNER_PASS, либо вводите
+# интерактивно по запросу apksigner)
 echo "Running apksigner..."
-apksigner sign --min-sdk-version 16 --ks my-release-key.jks --ks-key-alias my-key-alias-2 --out "$TARGET_A_SIGNED_APK" "$TARGET_A_APK"
+apksigner sign --min-sdk-version 16 --ks my-release-key.jks --ks-key-alias my-key-alias-2 \
+    ${APKSIGNER_PASS:+--ks-pass env:APKSIGNER_PASS --key-pass env:APKSIGNER_PASS} \
+    --out "$TARGET_A_SIGNED_APK" "$TARGET_A_APK"
 if [ $? -ne 0 ]; then
     echo "apksigner failed!"
     exit 1

@@ -1,10 +1,35 @@
 package dex
 
 import (
+	"bytes"
+	"crypto/sha1"
 	"encoding/binary"
 	"fmt"
+	"hash/adler32"
 	"os"
 )
+
+// validateHeaderHashes checks the two header checksums ART itself verifies
+// before it will load a dex: the adler32 at 0x08 (over everything from 0x0c on,
+// i.e. including the signature field) and the SHA-1 at 0x0c (over everything
+// from 0x20 on). Emitting the signature after the checksum leaves a stale
+// checksum, and ART then rejects the whole dex with "Bad checksum" -- the app
+// starts with "Unable to instantiate application <wrapper>". Checking here
+// turns that into a build-time failure.
+func validateHeaderHashes(v *dexView) error {
+	if len(v.data) < dexHeaderSize {
+		return fmt.Errorf("dex %s: file is shorter than the header (%d bytes)", v.path, len(v.data))
+	}
+	want := binary.LittleEndian.Uint32(v.data[0x08:])
+	if got := adler32.Checksum(v.data[0x0c:]); got != want {
+		return fmt.Errorf("dex %s: bad adler32 checksum (header 0x%08x, computed 0x%08x)", v.path, want, got)
+	}
+	sum := sha1.Sum(v.data[0x20:])
+	if !bytes.Equal(sum[:], v.data[0x0c:0x20]) {
+		return fmt.Errorf("dex %s: bad SHA-1 signature (header %x, computed %x)", v.path, v.data[0x0c:0x20], sum)
+	}
+	return nil
+}
 
 // Validate re-reads a dex file and returns an error when it is structurally
 // unusable, when one of wantClasses is missing, or when the string table is no
@@ -153,6 +178,9 @@ func Validate(path string, wantClasses ...string) error {
 	if err != nil {
 		return err
 	}
+	if err := validateHeaderHashes(v); err != nil {
+		return err
+	}
 	classes, err := v.classes()
 	if err != nil {
 		return fmt.Errorf("dex %s: %w", path, err)
@@ -184,6 +212,9 @@ func Validate(path string, wantClasses ...string) error {
 func ValidateSuperclass(path, class, wantSuper string) error {
 	v, err := openDex(path)
 	if err != nil {
+		return err
+	}
+	if err := validateHeaderHashes(v); err != nil {
 		return err
 	}
 	classes, err := v.classes()

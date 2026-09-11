@@ -29,9 +29,9 @@ type Entry struct {
 // case-insensitive filesystem (macOS, Windows) silently drops one of them, which
 // makes the patched application crash with Resources$NotFoundException.
 type RepackPlan struct {
-	Replace   map[string][]byte                      // name -> new content
+	Replace   map[string][]byte                       // name -> new content
 	Transform map[string]func([]byte) ([]byte, error) // name -> rewritten content
-	Rename    map[string]string                      // old name -> new name
+	Rename    map[string]string                       // old name -> new name
 	Delete    map[string]bool
 	Add       []Entry
 }

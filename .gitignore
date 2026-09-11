@@ -30,3 +30,15 @@ testapp/*.idsig
 testapp_legacy/*.apk
 testapp_legacy/*.idsig
 testapp_legacy/build/
+
+# corpus test harness (tools/corpus): only scripts, README and the tsv lists
+# are tracked — APK, logs and run artefacts never are
+tools/corpus/apk/
+tools/corpus/work/
+tools/corpus/*.log
+tools/corpus/matrix.tsv
+tools/corpus/inventory.json
+tools/corpus/ins_raw.txt
+tools/corpus/*.part
+tools/corpus/__pycache__/
+*.apk

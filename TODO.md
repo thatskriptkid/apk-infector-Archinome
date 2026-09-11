@@ -180,6 +180,42 @@
   ни CLEAR_TASK, ни MULTIPLE_TASK не помогают (проверено на устройстве) — для таких хостов брать V3/V6.
 - V7 native — ставится везде; payload сработал в 3/6 проверенных (зависит от того, грузится ли
   выбранная host-библиотека при старте; режим replace тоже не гарантирует).
-- V1/V2 — блокированы dex-барьером (нужен настоящий dex-writer, см. выше).
-- Остаточное: `injectLegacy`, `unzip`, `ZipWriter`, `addFileToZip`, `Patch_app_modifier`,
-  `sealAssetsPayloadLegacy` — мёртвый код после перехода на потоковый репак, удалить.
+- V1 — **работает**: настоящий dex-writer (`pkg/dex/{parse,emit,dexmodel,insns,mutf8}.go`)
+  вместо байтовой правки: Parse -> переименование дескриптора `Lz/z/z;` в целевой ->
+  Encode (канонические, отсортированные string_ids и пересчёт всех оффсетов/checksum/
+  signature). ADD-путь (хост без `android:name`) — цель `Landroid/app/Application;`
+  плюс добавление атрибута `android:name` = FQN обёртки (`pkg/manifest/patcher.go`).
+  V2 (frida) сквозным путём по-прежнему не перепроверен.
+- Мёртвый legacy-репак удалён: `injectLegacy`, `sealAssetsPayloadLegacy`, `ZipWriter`,
+  `addFileToZip`, `copy`, `unzip`, `CopyFile`/`copyFileContents`, `Patch_app_modifier`
+  (файловый вход). `PatchAppModifierBytes` оставлен сознательно — он снимает `final`
+  с Application-класса хоста, без этого обёртку не от чего наследовать.
+- Тесты стали герметичными: writer_test читает `pkg/dex/testdata/stub_pristine.dex`, а не
+  рабочий `InjectedApp.dex`, который каждый прогон инжекта переписывает на месте.
+
+### Вектор 1 — проверка на устройстве (2026-09-11)
+
+| Пакет | Путь | INJECT | INSTALL | CRASH | APP_ALIVE | Суперкласс обёртки в APK |
+|---|---|---|---|---|---|---|
+| com.chess.clock | хост со своим App | ok | ok | 0 | 1 | `Lcom/chess/clock/ClockApplication;` |
+| rak.pixellwp | ADD | ok | ok | 0 | 1 | `Landroid/app/Application;` |
+| com.foxdebug.acode | ADD | ok | ok | 0 | 1 | (ADD) |
+| fm.helio | хост со своим App | ok | ok | 0 | 1 | (хост) |
+| org.localsend.localsend_app | хост со своим App | ok | ok | 0 | 1 | (хост) |
+| org.catrobat.paintroid | ADD | ok | ok | 0 | 1 | (ADD) |
+
+`PAYLOAD=0` во всех прогонах ожидаем: кастомный payload вектора 1 (`payload_custom.dex`)
+ничего не логирует, поэтому критерий успеха структурный — приложение стартует именно
+нашей обёрткой (манифест `android:name` = обёртка, её суперкласс = App хоста), и
+`dexdump` подтверждает, что dex валиден. До фикса ART падал на этом же месте с
+`Unable to instantiate application ... InjectedApp`.
+
+### Найдено попутно (исправлено)
+
+- **Протухший adler32 в эмиттере**: checksum считался до записи SHA-1-подписи, а подпись
+  лежит внутри диапазона `[0x0c:]`, который этот checksum покрывает -> ART отвергал dex.
+  Порядок исправлен (сначала подпись, потом checksum) + регрессионный тест.
+- **Барьер усилен**: `Validate`/`ValidateSuperclass` теперь сверяют adler32 и SHA-1
+  заголовка с содержимым файла, а не только структуру.
+- **Битые фикстуры в репо**: `InjectedApp.dex` и `payload_custom.dex` лежали с неверной
+  SHA-1-подписью (артефакт старого патчера) — подписи пересчитаны, `dexdump` их принимает.

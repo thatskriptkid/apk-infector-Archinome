@@ -117,192 +117,71 @@ func PatchAppModifierBytes(data []byte) ([]byte, error) {
 	return data, nil
 }
 
-// Patch_app_modifier is the file-based entry point kept for the legacy
-// filesystem repack path.
-func Patch_app_modifier(path string) {
-	// Открытие DEX-файла
-	f, err := os.Open(path)
-	if err != nil {
-		panic(err)
-	}
-	defer f.Close()
-
-	dexFile := NewDex()
-	err = dexFile.Read(kaitai.NewStream(f), nil, dexFile)
-	if err != nil {
-		panic(err)
-	}
-
-	// Ищем определение класса, которое соответствует типу
-	classDefs, err := dexFile.ClassDefs()
-	if err != nil {
-		panic(err)
-	}
-	for i, classDefItem := range classDefs {
-		typeName, _ := classDefItem.TypeName()
-		//accessFlags := classDefItem.AccessFlags
-		if typeName == utils.OldAppNameNormalized {
-			//fmt.Printf("typename : %s | accessFlags = %d\n", typeName, accessFlags)
-
-			newAccessFlags := uint32(Dex_ClassAccessFlags__Public)
-
-			// Запись изменений обратно в DEX данные
-			classDefOffset := dexFile.Header.ClassDefsOff + uint32(i*32) // 32 - размер ClassDefItem
-			//fmt.Printf("classDefOffset = %x\n", classDefOffset)
-			data, err := os.ReadFile(path)
-			if err != nil {
-				panic(err)
-			}
-
-			binary.LittleEndian.PutUint32(data[classDefOffset+4:], newAccessFlags)
-
-			patchSignature(data[0:])
-			patchChecksum(data[0:])
-
-			// Сохранение модифицированного DEX-файла
-			log.Printf("Patch final to public in Application class %s \n", typeName)
-
-			outputFilename := path
-			err = os.WriteFile(outputFilename, data, 0644)
-			if err != nil {
-				panic(err)
-			}
-		}
-	}
-}
-
 // StubPath returns the dex file the Application-hijack vector rewrites in
 // place (the stub that ships as classes2.dex).
 func StubPath() string { return dexPath }
 
-func Patch() {
+// placeholderDescriptor is the stub class the injected wrapper extends. Patch
+// rewrites it to the host Application class descriptor.
+const placeholderDescriptor = "Lz/z/z;"
 
+// RenameDescriptor rewrites a type descriptor everywhere it appears in the
+// string table. Encode() re-derives the canonical string_ids/type_ids order and
+// every offset from the model, so this model edit is the whole rename — it
+// replaces the old byte-offset surgery, which only worked for one hard-coded
+// fixture layout and silently produced a broken dex on any deviation.
+func RenameDescriptor(f *DexFile, from, to string) (int, error) {
+	n := 0
+	for i, s := range f.Strings {
+		if s == from {
+			f.Strings[i] = to
+			n++
+		}
+	}
+	if n == 0 {
+		return 0, fmt.Errorf("dex: descriptor %q not found in the string table", from)
+	}
+	return n, nil
+}
+
+// Patch renames the stub's placeholder superclass to the host Application class
+// and rewrites StubPath() in place with a canonical dex emitted by the writer
+// (sorted string_ids, recomputed offsets/checksum/signature).
+func Patch() {
 	data, err := os.ReadFile(dexPath)
 	if err != nil {
-		log.Panicf("DEX Failed to read %s", dexPath)
+		log.Panicf("DEX Failed to read %s: %v", dexPath, err)
 	}
 
-	// calc offset to placeholder
-	placeholderOff = bytes.Index(data, []byte(placeholder))
+	f, err := Parse(data)
+	if err != nil {
+		log.Panicf("DEX Failed to parse %s: %v", dexPath, err)
+	}
 
-	log.Printf("placeholderOff = 0x%x\n", placeholderOff)
-
-	// we should add "L" and ";" and convert "."->"/" to get a dex descriptor.
-	// The name must be fully qualified here (resolveClassName): the wrapper
-	// extends the host Application class, and a relative android:name such as
-	// ".MyApp" would otherwise be renamed to the non-existent "L/MyApp;", which
-	// makes ART fail to load the wrapper.
+	// Target: the host's own Application class, or the framework one when the
+	// manifest had no android:name and we added the wrapper reference (ADD).
 	hostFQN := manifest.HostAppClassName()
 	if hostFQN == "" {
-		hostFQN = manifest.OldAppNameUTF8
+		hostFQN = "android.app.Application"
 	}
-	utils.OldAppNameNormalized = "L" + strings.ReplaceAll(hostFQN, ".", "/") + ";"
-	newAppName := utils.OldAppNameNormalized + "\x00"
+	target := "L" + strings.ReplaceAll(hostFQN, ".", "/") + ";"
+	utils.OldAppNameNormalized = target
 
-	// patch string len (string_data_item->utf16_size)
-	// -1 - it's a position of len before every string in dex
-	data[placeholderOff-1] = uint8(len(utils.OldAppNameNormalized))
-
-	// how many bytes we added to DEX?
-	var sizeDiff uint32
-	sizeDiff = uint32(len(newAppName) - placeholderLength)
-	log.Printf("sizeDiff =0x%x", sizeDiff)
-
-	// how many align bytes we should add
-	var alignCount uint32
-	alignCount = 4 - (sizeDiff % 4)
-
-	if alignCount == 4 {
-		alignCount = 0
-	}
-	log.Printf("alignCount = 0x%x", alignCount)
-
-	// patch mapOff (header_item->map_off)
-	var oldMapOff uint32
-	oldMapOff = binary.LittleEndian.Uint32(data[mapOff:])
-	newMapOff := oldMapOff + sizeDiff + alignCount
-	binary.LittleEndian.PutUint32(data[mapOff:], newMapOff)
-	log.Printf("old mapOff = 0x%0x | new mapOff = 0x%0x\n", oldMapOff, newMapOff)
-
-	// patch datasize (header_item->data_size)
-	var oldDataSize uint32
-	oldDataSize = binary.LittleEndian.Uint32(data[dataSizeOff:])
-	newDataSize := oldDataSize + sizeDiff + alignCount
-	binary.LittleEndian.PutUint32(data[dataSizeOff:], newDataSize)
-	log.Printf("old dataSize = 0x%0x | new dataSize = 0x%0x\n", oldDataSize, newDataSize)
-
-	// patch stringIds (string_id_item->string_data_off)
-	// stringIds - table of offsets to strings
-	// offsets counted from the start (0x0)
-	// posStringIdsChangedOff - position in our DEX from which we start changing
-
-	// we hardcoded it because we use our predictable DEX
-	var oldId uint32
-	stringIdsReader := bytes.NewReader(data[posStringIdsChangedOff:])
-
-	j := 0
-
-	for i := 0; i < stringIdsCount; i++ {
-
-		err = binary.Read(stringIdsReader, binary.LittleEndian, &oldId)
-		if err != nil {
-			log.Panic("Failed to read stringId", err)
-		}
-
-		newId := oldId + sizeDiff
-		binary.LittleEndian.PutUint32(data[posStringIdsChangedOff+j:], newId)
-		j += 4
+	n, err := RenameDescriptor(f, placeholderDescriptor, target)
+	if err != nil {
+		log.Panicf("DEX %s: %v", dexPath, err)
 	}
 
-	// patch map->class_def_item->class_data_off (4 byte)
-	classDataOff := binary.LittleEndian.Uint32(data[classDataOffOff:])
-	newClassDataOff := classDataOff + sizeDiff
-	binary.LittleEndian.PutUint32(data[classDataOffOff:], newClassDataOff)
-
-	log.Printf("off = 0x%x | classDataOff = 0x%x | newClassDataOff = 0x%x",
-		classDataOffOff, classDataOff, newClassDataOff)
-
-	// patch map->class_data_item->offset (dont apply alignment)
-	classDataItemOff := binary.LittleEndian.Uint32(data[classDataItemOffOff:])
-	newClassDataItemOff := classDataItemOff + sizeDiff
-	binary.LittleEndian.PutUint32(data[classDataItemOffOff:], newClassDataItemOff)
-	log.Printf("off = 0x%x | classDataItemOff = 0x%x | newClassDataItemOff = 0x%x",
-		classDataItemOffOff, classDataItemOff, newClassDataItemOff)
-
-	// patch map->annotation_set_item->entries->annotation_off_item
-	annotationOffItem := binary.LittleEndian.Uint32(data[annotationOffItemOff:])
-	newAnnotationOffItem := annotationOffItem + sizeDiff + alignCount
-	binary.LittleEndian.PutUint32(data[annotationOffItemOff:], newAnnotationOffItem)
-	log.Printf("off = 0x%x | annotationOffItem = 0x%x | newAnnotationOffItem = 0x%x",
-		annotationOffItemOff, annotationOffItem, newAnnotationOffItem)
-
-	//patch map->map_list->offset
-	mapListOff := binary.LittleEndian.Uint32(data[mapListOffOff:])
-	newMapListOff := mapListOff + sizeDiff + alignCount
-	binary.LittleEndian.PutUint32(data[mapListOffOff:], newMapListOff)
-	log.Printf("off = 0x%x | mapListOff = 0x%x | newMapListOff = 0x%x",
-		mapListOffOff, mapListOff, newMapListOff)
-
-	// from now we start patching second half of DEX (after array of strings)
-	// but first we need to insert alignment bytes
-	if alignCount != 0 {
-		var alignSlice = make([]byte, alignCount)
-		var alignPos uint32 = 0x220
-		// insert byte alignment
-		data = append(data[:alignPos], append(alignSlice, data[alignPos:]...)...)
+	out, err := f.Encode()
+	if err != nil {
+		log.Panicf("DEX Failed to emit %s: %v", dexPath, err)
 	}
+	if err := os.WriteFile(dexPath, out, 0644); err != nil {
+		log.Panicf("DEX Failed to write %s: %v", dexPath, err)
+	}
+	// The injector seals InjectedApp_patched.dex as classesN.dex.
+	utils.WriteChanges(out, dexPathNew)
 
-	// insert new parent application name
-	data = append(data[:placeholderOff], append([]byte(newAppName), data[placeholderOff+placeholderLength:]...)...)
-
-	// patch new fileSize (header_item->file_size)
-	var fileSize = uint32(len(data))
-	binary.LittleEndian.PutUint32(data[fileSizeOff:], fileSize)
-
-	log.Printf("fileSize = 0x%x", fileSize)
-
-	patchSignature(data[0:])
-	patchChecksum(data[0:])
-
-	utils.WriteChanges(data, dexPathNew)
+	log.Printf("DEX writer: %s -> %s (%d string(s) renamed, %d -> %d bytes)",
+		placeholderDescriptor, target, n, len(data), len(out))
 }
