@@ -145,13 +145,40 @@ func patchApplication() ([]byte, int, bool) {
 	return androidManifestRawNew, lenDiff, false
 }
 
-// addApplicationName appends android:name (0x01010003) to the <application>
+// attrInsertOffset returns the offset inside the attribute list of the element
+// starting at elemStart where an attribute with name index nameStrIdx has to be
+// written.
+//
+// aapt2 emits an element's attributes sorted by ascending name index, and the
+// framework resolves an attribute through the resource map keyed by that index.
+// Appending a fresh attribute at the end of the list therefore only works when
+// its name index is larger than every existing one: an android:name (index 3,
+// right after android:icon/label) tacked on after android:icon..roundIcon is
+// dropped silently - PackageManagerService then reports a null Application
+// class, the host runs with android.app.Application and the injected wrapper
+// never executes.
+func attrInsertOffset(data []byte, elemStart, attrCount, nameStrIdx int) int {
+	attrStart := int(leU16(data, elemStart+24))
+	attrSize := int(leU16(data, elemStart+26))
+	if attrSize == 0 {
+		attrSize = 20
+	}
+	base := elemStart + 16 + attrStart
+	for i := 0; i < attrCount; i++ {
+		if int(leU32(data, base+i*attrSize+4)) > nameStrIdx {
+			return base + i*attrSize
+		}
+	}
+	return base + attrCount*attrSize
+}
+
+// addApplicationName adds android:name (0x01010003) to the <application>
 // element, pointing at the wrapper class. Modeled on the "attribute ABSENT"
 // branch of PatchAppComponentFactory: grow the string pool with the class
 // string, grow the element by one 20-byte attribute (size +20 at +4, attrCount
-// +1 at +28, the attribute inserted at appStart+appSize) and fix the AXML
-// total size. No new attribute names are invented: 0x01010003 ("name") is
-// already in every resource map.
+// +1 at +28, the attribute spliced in at the position that keeps the list
+// sorted by name index) and fix the AXML total size. No new attribute names are
+// invented: 0x01010003 ("name") is already in every resource map.
 func addApplicationName() []byte {
 	data, err := os.ReadFile(utils.ManifestBinaryPath)
 	if err != nil {
@@ -219,10 +246,11 @@ func addApplicationName() []byte {
 	appSize := int(leU32(data, appStart+4))
 	appAttrCount := int(leU16(data, appStart+28))
 	newTotal += 20
+	insOff := attrInsertOffset(data, appStart, appAttrCount, int(nameStrIdx))
 	edits = append(edits,
 		axEdit{appStart + 4, u32bytes(uint32(appSize + 20)), true},
 		axEdit{appStart + 28, u16bytes(uint16(appAttrCount + 1)), true},
-		axEdit{appStart + appSize, attrBytes, false},
+		axEdit{insOff, attrBytes, false},
 	)
 
 	edits = append(edits, axEdit{axmlSizeOff, u32bytes(uint32(newTotal)), true})

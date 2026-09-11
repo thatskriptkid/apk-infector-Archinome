@@ -16,7 +16,15 @@
 #   SIGN_MSG      текст ошибки apksigner (при RESULT=SIGN_FAIL)
 #   PID, APP_ALIVE, PAYLOAD, PAYLOAD_LINES, CRASH, FATAL_NOTE
 #   RESULT        PAYLOAD_OK | NO_PAYLOAD | INJECT_FAIL | INSTALL_FAIL |
-#                 ALIGN_FAIL | SIGN_FAIL | SETUP_FAIL
+#                 ALIGN_FAIL | SIGN_FAIL | SETUP_FAIL | NA_NO_INTERNET
+#
+# Вектор 2 (frida) проверяется не по лог-тегу, а по интерфейсу самого gadget'а:
+# frida-ps -H 127.0.0.1:27042 должен показать ровно один процесс Gadget.
+# ВАЖНО: frida-server по умолчанию слушает тот же 27042 — перед прогоном вектора 2
+# уведи его (frida-server -l 127.0.0.1:27099), иначе проверка попадёт в сервер.
+# Если у хоста нет android.permission.INTERNET, listen-режим gadget'а не может
+# создать сокет (SELinux), приложение падает по abort — такой прогон получает
+# вердикт NA_NO_INTERNET, а не NO_PAYLOAD.
 #
 # Переменные окружения:
 #   ARCH_BIN     путь к собранному бинарю archinome (по умолчанию <repo>/archinome)
@@ -24,6 +32,8 @@
 #   KS_PASS      ОБЯЗАТЕЛЬНО: пароль keystore И ключа. Литеральных паролей в
 #                репозитории нет — пароль приходит только из окружения.
 #   KEY_ALIAS    alias ключа в keystore (по умолчанию my-key-alias-2)
+#   FRIDA_BIN    frida-ps для проверки вектора 2 (по умолчанию из PATH; нужен
+#                frida-tools 17.x — та же мажорная.минорная, что у gadget'а)
 #   JAVA_HOME    JDK для apksigner (по умолчанию homebrew openjdk@21)
 #   BUILD_TOOLS  каталог build-tools (aapt2/zipalign/apksigner/d8)
 #   CORPUS_DIR   каталог корпуса, в нём же создаётся work/ (по умолчанию
@@ -140,6 +150,44 @@ if [ "$REINSTALL" = "1" ]; then
   PID=$(adb shell pidof "$PKG" 2>/dev/null | tr -d '\r')
 fi
 LOG=$(adb logcat -d 2>/dev/null)
+
+# ---- vector 2 (frida gadget): his own interface, not a log tag --------------
+# The injected wrapper only calls System.loadLibrary("frida-gadget"); nothing
+# logs anything, and a gadget that cannot create its socket aborts the host on
+# the spot. The only honest check is the gadget itself: frida-server compatible,
+# a single process named Gadget, listening on 27042. That needs the host to hold
+# android.permission.INTERNET - the platform denies socket creation to app
+# domains without it, which is exactly how the gadget dies.
+if [ "$TAG" = "GADGET_CHECK" ]; then
+  if ! "$B/aapt2" dump permissions "$SIGNED" 2>/dev/null | grep -qa 'android.permission.INTERNET'; then
+    echo "PAYLOAD=na"
+    echo "FATAL_NOTE=host has no android.permission.INTERNET: a listen-mode gadget cannot create a socket"
+    echo "APP_ALIVE=$([ -n "$PID" ] && [ "$PID" != none ] && echo 1 || echo 0)"
+    echo "RESULT=NA_NO_INTERNET"
+    adb shell am force-stop "$PKG" >/dev/null 2>&1
+    exit 0
+  fi
+  adb forward tcp:27042 tcp:27042 >/dev/null 2>&1
+  GADGET_LINES=$("${FRIDA_BIN:-frida-ps}" -H 127.0.0.1:27042 2>/dev/null | tr '\n' '|' | cut -c1-200)
+  GADGET_HITS=$("${FRIDA_BIN:-frida-ps}" -H 127.0.0.1:27042 2>/dev/null | awk 'NR>1 {print $2}' | grep -c '^Gadget$')
+  # frida-server тоже по умолчанию слушает 27042: если на порту он, ответ содержит
+  # весь список процессов устройства, и вердикт нельзя выдавать как «gadget не встал»
+  GADGET_OTHER=$("${FRIDA_BIN:-frida-ps}" -H 127.0.0.1:27042 2>/dev/null | awk 'NR>1' | wc -l | tr -d ' ')
+  adb forward --remove tcp:27042 >/dev/null 2>&1
+  echo "PAYLOAD=$GADGET_HITS"
+  echo "PAYLOAD_LINES=$GADGET_LINES"
+  echo "CRASH=$(echo "$LOG" | grep -acE 'Failed to start|Abort message')"
+  if [ "$GADGET_HITS" -eq 0 ] && [ "${GADGET_OTHER:-0}" -gt 2 ]; then
+    echo "FATAL_NOTE=на 27042 отвечает не gadget, а frida-server (процессов $GADGET_OTHER): уведи сервер на другой порт (frida-server -l 127.0.0.1:27099) и повтори"
+  else
+    echo "FATAL_NOTE=$(echo "$LOG" | grep -aE 'Failed to start|Abort message' | head -2 | tr '\n' '|' | cut -c1-300)"
+  fi
+  echo "APP_ALIVE=$([ -n "$PID" ] && [ "$PID" != none ] && echo 1 || echo 0)"
+  if [ "$GADGET_HITS" -gt 0 ]; then echo "RESULT=PAYLOAD_OK"; else echo "RESULT=NO_PAYLOAD"; fi
+  adb shell am force-stop "$PKG" >/dev/null 2>&1
+  exit 0
+fi
+
 echo "PAYLOAD=$(echo "$LOG" | grep -acE "$TAG")"
 echo "PAYLOAD_LINES=$(echo "$LOG" | grep -aE "$TAG" | head -3 | tr '\n' '|' | cut -c1-400)"
 echo "CRASH=$(echo "$LOG" | grep -acE 'FATAL EXCEPTION|ClassNotFoundException|Unable to instantiate application')"

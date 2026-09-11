@@ -121,20 +121,10 @@ func main() {
 
 		fmt.Println("	--Patching dex...")
 		dex.Patch()
-		// The stub dex is rewritten in place (class rename + offset fixups). A
-		// fixture that no longer matches those assumptions yields a structurally
-		// broken dex, and ART then fails to load the wrapper class — i.e. the
-		// app is bricked on the device. Refuse to write such an APK.
-		if err := dex.Validate(dex.StubPath(), manifest.WrapperClassName()); err != nil {
-			log.Panicf("dex patch produced an unusable stub dex (%v) - refusing to write %s", err, os.Args[2])
-		}
-		// The wrapper must extend the host's own Application class, otherwise
-		// ART cannot resolve it and the app dies at start.
-		if host := manifest.HostAppClassName(); host != "" {
-			if err := dex.ValidateSuperclass(dex.StubPath(), manifest.WrapperClassName(), host); err != nil {
-				log.Panicf("stub dex superclass mismatch (%v) - refusing to write %s", err, os.Args[2])
-			}
-		}
+		// Patch() validates the dex it produced (header hashes, wrapper class,
+		// superclass, string order) before handing it to the injector, and
+		// panics otherwise — a broken stub would brick the app on the device.
+		// The gate lives next to the emitted bytes so it cannot be bypassed.
 	}
 
 	fmt.Println("Injecting...")

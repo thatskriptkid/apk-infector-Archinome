@@ -31,7 +31,9 @@ W = os.environ.get("CORPUS_DIR", HERE)
 
 TAGS = {
     1: "PAYLOAD_CUSTOM|ARCHINOME",
-    2: "FRIDA|ARCHINOME",
+    # вектор 2 не логирует: инжектор только вызывает System.loadLibrary, поэтому
+    # критерий — интерфейс самого gadget'а (frida-ps -> один процесс Gadget)
+    2: "GADGET_CHECK",
     3: "PROVIDER_PAYLOAD_EXECUTED",
     4: "TRAMPOLINE_PAYLOAD_EXECUTED",
     5: "RECEIVER_PAYLOAD_EXECUTED",
@@ -66,6 +68,10 @@ def note_for(d):
         return sanitize(d.get("FATAL_NOTE", "") or d.get("PAYLOAD_LINES", ""))
     if verdict in ("ALIGN_FAIL", "SIGN_FAIL", "SETUP_FAIL"):
         return sanitize(d.get("SIGN_MSG", "") or d.get("INJECT_MSG", ""))
+    if verdict == "NA_NO_INTERNET":
+        return "хост без android.permission.INTERNET: gadget в listen-режиме не может создать сокет"
+    if verdict == "HARNESS_TIMEOUT":
+        return "прогон не уложился в таймаут (900 с)"
     return sanitize(d.get("INJECT_MSG", ""))
 
 

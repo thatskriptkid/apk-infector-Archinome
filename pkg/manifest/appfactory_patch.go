@@ -190,16 +190,18 @@ func PatchAppComponentFactory() {
 				axEdit{resMapOff + resMapSizeOrig, blob, false},
 			)
 		}
-		// append one attribute to <application> (20 bytes) and grow the element
+		// add one attribute to <application> (20 bytes), spliced in at the
+		// position that keeps the attribute list sorted by name index
 		attrBytes := make([]byte, 20)
 		putAttr(attrBytes, 0, uint32(androidNs), uint32(afNameStrIdx), classStrIdx, 0x03, classStrIdx)
 		appSize := int(leU32(data, appStart+4))
 		appAttrCount := int(leU16(data, appStart+28))
 		newTotal += 20
+		insOff := attrInsertOffset(data, appStart, appAttrCount, int(afNameStrIdx))
 		edits = append(edits,
 			axEdit{appStart + 4, u32bytes(uint32(appSize + 20)), true},
 			axEdit{appStart + 28, u16bytes(uint16(appAttrCount + 1)), true},
-			axEdit{appStart + appSize, attrBytes, false},
+			axEdit{insOff, attrBytes, false},
 		)
 	}
 

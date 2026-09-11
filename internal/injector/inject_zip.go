@@ -82,21 +82,43 @@ func Inject(inputAPK string, outputAPK string) {
 		plan.Add = append(plan.Add, Entry{Name: dexName(next + 1), Data: mustReadFile(payloadHijackPath()), Method: zip.Deflate})
 		log.Printf("Successfuly injected DEX: %s, %s", dexName(next), dexName(next+1))
 
-		for abi, file := range map[string]string{
-			"arm64-v8a":   "frida-gadget-16.1.1-android-arm64.so",
-			"armeabi-v7a": "frida-gadget-16.1.1-android-arm.so",
-			"x86":         "frida-gadget-16.1.1-android-x86.so",
-			"x86_64":      "frida-gadget-16.1.1-android-x86_64.so",
-		} {
-			gadget, err := os.ReadFile(filepath.Join("frida_gadget", file))
-			if err != nil {
-				log.Panicf("Failed to read the frida gadget for %s: %v", abi, err)
+		// The frida gadget belongs to the frida vector only: the custom payload
+		// vector must stay as quiet as its payload, and ~39 MB of STORED
+		// libraries plus a listening port would give every V1 host away.
+		if utils.Payload_option == int(utils.Frida_payload) {
+			abis := selectGadgets(names)
+			injected := 0
+			for _, g := range abis {
+				gadget, err := os.ReadFile(gadgetPath(g.file))
+				if err != nil {
+					// A missing gadget binary is a broken install, not a property of
+					// the host: report it and skip that ABI instead of aborting.
+					log.Printf("WARNING: frida gadget for %s not found (%v) - skipping ABI", g.abi, err)
+					continue
+				}
+				plan.Add = append(plan.Add, Entry{
+					Name:   filepath.ToSlash(filepath.Join("lib", g.abi, "libfrida-gadget.so")),
+					Data:   gadget,
+					Method: zip.Store,
+				})
+				// The gadget needs its config next to itself. With no config
+				// file the library loads, its thread shows up in
+				// /proc/<pid>/task, and no listener is ever created (measured on
+				// Android 17); with a config in lib/<abi>/ - which Frida reads
+				// straight from the APK, no extractNativeLibs needed - it
+				// exposes the usual frida-server compatible interface.
+				plan.Add = append(plan.Add, Entry{
+					Name:   filepath.ToSlash(filepath.Join("lib", g.abi, gadgetConfigName)),
+					Data:   fridaGadgetConfig(),
+					Method: zip.Store,
+				})
+				fmt.Printf("	--injected frida gadget: lib/%s/libfrida-gadget.so (frida %s, %d bytes) + %s\n",
+					g.abi, fridaGadgetVersion, len(gadget), gadgetConfigName)
+				injected++
 			}
-			plan.Add = append(plan.Add, Entry{
-				Name:   filepath.ToSlash(filepath.Join("lib", abi, "libfrida-gadget.so")),
-				Data:   gadget,
-				Method: zip.Store,
-			})
+			if injected == 0 {
+				log.Panic("Failed to inject the frida gadget: no gadget binary found in frida_gadget/")
+			}
 		}
 	}
 
@@ -201,6 +223,97 @@ func payloadHijackPath() string {
 		return payload_frida_name
 	}
 	return payload_custom_name
+}
+
+// fridaGadgetVersion is the Frida release the gadgets in frida_gadget/ come
+// from. A gadget speaks the agent protocol of its own release, so it has to
+// match the major.minor of the frida-tools (host) and frida-server (device)
+// used to talk to it — with a mismatch the host simply refuses to attach.
+// Bump this together with the files in frida_gadget/.
+const fridaGadgetVersion = "17.18.0"
+
+// gadgetConfigName is the name Frida looks for next to the gadget binary: the
+// Android package manager only extracts files under lib/<abi>/ that look like
+// libraries, hence the .config.so suffix.
+const gadgetConfigName = "libfrida-gadget.config.so"
+
+// fridaGadgetConfig is the config shipped next to every gadget.
+//
+//   - on_load=resume: the gadget's own default (wait) blocks the app's main
+//     thread inside its constructor until a controller attaches; in our runs
+//     Android repeatedly killed such hosts with an ANR, so the injected app
+//     must be able to boot on its own.
+//   - listen on 127.0.0.1:27042 keeps the standard interactive workflow
+//     (adb forward + frida -H 127.0.0.1:27042), which needs the host app to
+//     hold android.permission.INTERNET: the platform denies socket creation to
+//     app domains without it, and the gadget then aborts ("Unable to create
+//     socket: Operation not permitted"). For hosts without INTERNET use script
+//     interaction instead, which never touches the network.
+func fridaGadgetConfig() []byte {
+	return []byte(`{"interaction":{"type":"listen","address":"127.0.0.1","port":27042,` +
+		`"on_port_conflict":"fail","on_load":"resume"}}`)
+}
+
+type gadgetABI struct {
+	abi  string
+	file string
+}
+
+// gadgetRelease lists the prebuilt gadgets shipped with the tool, in injection
+// order.
+var gadgetRelease = []gadgetABI{
+	{"arm64-v8a", "frida-gadget-" + fridaGadgetVersion + "-android-arm64.so"},
+	{"armeabi-v7a", "frida-gadget-" + fridaGadgetVersion + "-android-arm.so"},
+	{"x86", "frida-gadget-" + fridaGadgetVersion + "-android-x86.so"},
+	{"x86_64", "frida-gadget-" + fridaGadgetVersion + "-android-x86_64.so"},
+}
+
+// selectGadgets picks which ABIs to inject. A host that already ships native
+// libraries gets exactly its own ABIs — every extra gadget is a STORED ~25 MB
+// library the device will never load. A pure-Java host (no lib/ at all) gets
+// the two mobile ABIs, which is what any real device picks.
+func selectGadgets(names []string) []gadgetABI {
+	have := make(map[string]bool)
+	for _, n := range names {
+		rest, ok := strings.CutPrefix(n, "lib/")
+		if !ok {
+			continue
+		}
+		if i := strings.IndexByte(rest, '/'); i > 0 {
+			have[rest[:i]] = true
+		}
+	}
+
+	var out []gadgetABI
+	for _, g := range gadgetRelease {
+		if have[g.abi] {
+			out = append(out, g)
+		}
+	}
+	if len(out) > 0 {
+		return out
+	}
+	for _, g := range gadgetRelease {
+		if g.abi == "arm64-v8a" || g.abi == "armeabi-v7a" {
+			out = append(out, g)
+		}
+	}
+	return out
+}
+
+// gadgetPath resolves a gadget file: first relative to the working directory
+// (the documented layout — run from the repository root), then next to the
+// executable, so a binary invoked from elsewhere still finds its gadgets.
+func gadgetPath(file string) string {
+	direct := filepath.Join("frida_gadget", file)
+	if _, err := os.Stat(direct); err == nil {
+		return direct
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return direct
+	}
+	return filepath.Join(filepath.Dir(exe), "frida_gadget", file)
 }
 
 func mustReadFile(path string) []byte {
