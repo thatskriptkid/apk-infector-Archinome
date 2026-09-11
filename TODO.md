@@ -147,3 +147,39 @@
 - Вектор 1 не умеет ADD: без `android:name` в `<application>` патч паникует (`Application name wasn't found`) — нужен ADD-путь как в provider/appfactory.
 - Тот же ресмап-риск остаётся в `receiver_patch.go` (добавляет `android:exported` через дописывание resmap) — на хостах без этого слота патч может дать неустановимый APK; стоит перенести правило «не расширять resmap для валидируемых атрибутов» на все патчеры.
 - Вектор 2 (frida) и «холодные» триггеры receiver (ребут) сквозным путём не перепроверялись.
+
+## Корпус-тест: 20 сторонних приложений (2026-09-11)
+
+Источник: `offa/android-foss` (650 пакетов) -> рандом-выборка (seed 20260911) -> APK с F-Droid по
+`suggestedVersionCode`. Матрица: 20 приложений x 8 векторов = 160 прогонов на устройстве
+(инжект -> zipalign -> apksigner -> install -> launch -> logcat -> alive -> uninstall).
+
+### Найдено и исправлено
+1. **Репак через файловую систему уничтожал APK** (главный баг универсальности): macOS-ФС
+   регистро-независима, а AAPT2-обфускация даёт имена ресурсов, различающиеся только регистром
+   (`res/HQ.xml` vs `res/hq.xml`) -> 18/20 приложений теряли записи (до 410 на приложение),
+   приложение ставилось, payload срабатывал и падало на `Resources$NotFoundException`.
+   Фикс: потоковый репак zip->zip (`OpenRaw`/`CreateRaw`), имена, методы сжатия и байты копируются.
+   В тест встроена проверка фидельности: 0 missing, 0 смен методов, общие записи идентичны.
+2. **V4 на alias-only launcher** (Fossify: 19 alias; Organic Maps): ретаргет `targetActivity`
+   первого включённого alias на трамплин вместо синтеза activity с копией фильтра. Синтез требовал
+   `android:exported` -> `INSTALL_PARSE_FAILED_MANIFEST_MALFORMED` на targetSdk>=31. Ретаргет
+   сохраняет иконку/лейбл alias; писать надо ОБА слота строкового атрибута (rawValue +8 и
+   typedValue.data +16, платформа читает typed).
+3. **V7: payload `.so` писался Deflate** -> на APK с `extractNativeLibs=false` установка падала
+   (`INSTALL_FAILED_INTERNAL_ERROR ... Failed to extract native libraries, res=-110`).
+   Фикс: `zip.Store` для `.so` и запрет коэрции `zip.Store (0) -> Deflate`.
+4. V7 на APK без `lib/` больше не паникует (чистое сообщение), режимы пробуются chain->replace->append.
+
+### Итог по векторам
+19 тестируемых APK (notesnook исключён: не ставится и в оригинале, `INSTALL_FAILED_NO_MATCHING_ABIS`).
+- V3 provider — 19/19; V5 receiver — 19/19 (триггер `MY_PACKAGE_REPLACED` через `install -r`);
+  V6 appcomponentfactory — 19/19 (в т.ч. ADD-путь); V8 assets — 19/19.
+- V4 trampoline — 18/19. Ограничение: хост, у которого entry activity несёт SplashScreen-тему
+  (acode, ffupdater), после форварда падает в AppCompat ("You need to use a Theme.AppCompat theme");
+  ни CLEAR_TASK, ни MULTIPLE_TASK не помогают (проверено на устройстве) — для таких хостов брать V3/V6.
+- V7 native — ставится везде; payload сработал в 3/6 проверенных (зависит от того, грузится ли
+  выбранная host-библиотека при старте; режим replace тоже не гарантирует).
+- V1/V2 — блокированы dex-барьером (нужен настоящий dex-writer, см. выше).
+- Остаточное: `injectLegacy`, `unzip`, `ZipWriter`, `addFileToZip`, `Patch_app_modifier`,
+  `sealAssetsPayloadLegacy` — мёртвый код после перехода на потоковый репак, удалить.

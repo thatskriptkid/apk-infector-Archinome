@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"crypto/sha1"
 	"encoding/binary"
-	//"fmt"
+	"fmt"
 	"hash/adler32"
 	"log"
 	"os"
@@ -84,6 +84,41 @@ func patchChecksum(data []byte) {
 */
 // Do not forget about alignment of some structures!
 
+// PatchAppModifierBytes clears the final modifier on the host Application class
+// definition inside an in-memory dex image and re-signs it.
+//
+// The Application-hijack vector makes the injected wrapper subclass the host's
+// own Application class, and ART refuses to subclass a final class. The APK is
+// repacked straight from memory (see internal/injector.Repack), so this has to
+// work on a byte slice rather than on a path.
+func PatchAppModifierBytes(data []byte) ([]byte, error) {
+	dexFile := NewDex()
+	if err := dexFile.Read(kaitai.NewStream(bytes.NewReader(data)), nil, dexFile); err != nil {
+		return nil, err
+	}
+	classDefs, err := dexFile.ClassDefs()
+	if err != nil {
+		return nil, err
+	}
+	for i, classDefItem := range classDefs {
+		typeName, _ := classDefItem.TypeName()
+		if typeName != utils.OldAppNameNormalized {
+			continue
+		}
+		classDefOffset := dexFile.Header.ClassDefsOff + uint32(i*32) // 32 = sizeof(ClassDefItem)
+		if int(classDefOffset)+8 > len(data) {
+			return nil, fmt.Errorf("class_def offset 0x%x is out of the dex image", classDefOffset)
+		}
+		binary.LittleEndian.PutUint32(data[classDefOffset+4:], uint32(Dex_ClassAccessFlags__Public))
+		patchSignature(data)
+		patchChecksum(data)
+		log.Printf("Patch final to public in Application class %s \n", typeName)
+	}
+	return data, nil
+}
+
+// Patch_app_modifier is the file-based entry point kept for the legacy
+// filesystem repack path.
 func Patch_app_modifier(path string) {
 	// Открытие DEX-файла
 	f, err := os.Open(path)

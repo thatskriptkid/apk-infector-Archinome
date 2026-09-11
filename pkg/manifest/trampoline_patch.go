@@ -582,6 +582,11 @@ func PatchTrampoline() {
 		}
 	}
 
+	// aliasHost marks an <activity-alias> that was retargeted at the trampoline
+	// (alias-only launchers); its MAIN/LAUNCHER filter must survive the strip
+	// pass below, because that alias IS the launcher entry of the patched app.
+	aliasHost := -1
+
 	// --- host component: becomes the trampoline ---
 	if hostIdx >= 0 {
 		host := comps[hostIdx]
@@ -597,18 +602,58 @@ func PatchTrampoline() {
 		// meta-data as first child
 		edits = append(edits, edit{host.startOff + int(leU32(data, host.startOff+4)), 0, buildMeta(classIdx[host.origTarget])})
 	} else {
-		// alias-only host: declare the trampoline as a plain <activity> carrying
-		// a copy of the first alias' MAIN/LAUNCHER intent-filter (so the app keeps
-		// exactly one launcher entry) plus the meta-data
+		// Alias-only launchers: every MAIN/LAUNCHER component under <application>
+		// is an <activity-alias> (Fossify's themed icons, Organic Maps), so there
+		// is no <activity> to rename. Retarget one launcher alias at the
+		// trampoline and declare the trampoline as a plain <activity> with NO
+		// intent-filter:
+		//   * the alias keeps its own icon/label, so the patched app still shows
+		//     exactly one launcher entry, and an activity without an intent-filter
+		//     needs no android:exported - the platform rejects a targetSdk>=31 APK
+		//     with INSTALL_PARSE_FAILED_MANIFEST_MALFORMED otherwise;
+		//   * synthesising an activity that carries a copy of the alias' filter
+		//     (what this used to do) both lost the icon and hit exactly that
+		//     rejection.
+		// Prefer an alias the host enables itself, because a disabled alias is not
+		// a launcher entry at all.
+		pick := 0
+		for i, c := range comps {
+			if c.isActivity {
+				continue
+			}
+			pick = i
+			if _, disabled := disabledAttr(data, c.startOff, resIds); !disabled {
+				break
+			}
+		}
+		if comps[pick].isActivity {
+			log.Panicf("trampoline: launcher activity %s has no host slot", comps[pick].origTarget)
+		}
+		host := comps[pick]
 		newAct := buildStartTag(uint32(actTagIdx), []elemAttr{
 			{uint32(androidNs), uint32(nameResIdx), trampolineClassIdx, 0x03, trampolineClassIdx},
 		})
-		if ch := launcherFilter(data, pool, resIds, comps[0].startOff); ch != nil {
-			newAct = append(newAct, data[ch.startOff:ch.endOff]...)
-		}
-		newAct = append(newAct, buildMeta(classIdx[comps[0].origTarget])...)
+		newAct = append(newAct, buildMeta(classIdx[host.origTarget])...)
 		newAct = append(newAct, buildEndTag(uint32(actTagIdx))...)
 		edits = append(edits, edit{appInsertOff, 0, newAct})
+		// entryAttr of an alias is its android:targetActivity: point it at the
+		// trampoline so the launcher routes through the payload and the original
+		// activity is launched from the meta-data above.
+		// Both the raw and the typed string slot must be rewritten: the platform
+		// reads typedValue.data (+16), aapt2 only rebuilds rawValue (+8), so
+		// writing one without the other silently retargets nothing.
+		edits = append(edits, edit{host.entryAttr.off + 8, 4, u32bytes(trampolineClassIdx)})
+		edits = append(edits, edit{host.entryAttr.off + 16, 4, u32bytes(trampolineClassIdx)})
+		if a, disabled := disabledAttr(data, host.startOff, resIds); disabled {
+			edits = append(edits, edit{a.off + 16, 4, u32bytes(1)})
+		}
+		aliasHost = host.startOff
+		aliasName := ""
+		if na, ok := findAttrByResID(data, host.startOff, resIds, resIDName); ok {
+			aliasName = attrStringValue(pool, data, na)
+		}
+		log.Printf("Trampoline: launcher alias %s retargeted at %s (launches %s)",
+			aliasName, trampolineClassName, host.origTarget)
 	}
 
 	// --- every other launcher component loses its MAIN/LAUNCHER filter ---
@@ -616,7 +661,7 @@ func PatchTrampoline() {
 	// android:targetActivity, whose name string is usually absent from the host
 	// resource map, and the platform then refuses to install the APK.
 	for i, c := range comps {
-		if i == hostIdx {
+		if i == hostIdx || c.startOff == aliasHost {
 			continue
 		}
 		for _, ch := range childElements(data, c.startOff) {

