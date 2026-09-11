@@ -19,6 +19,9 @@ const (
 	Receiver_payload            Payload_option_type = 5
 	AppComponentFactory_payload Payload_option_type = 6
 	Native_payload              Payload_option_type = 7
+	// Assets_payload ships the real payload encrypted in assets/ and lets a small
+	// in-APK stub decrypt and DexClassLoader it at runtime (see pkg/assetpayload).
+	Assets_payload Payload_option_type = 8
 )
 
 var Payload_option int
