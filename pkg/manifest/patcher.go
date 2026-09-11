@@ -145,31 +145,49 @@ func patchApplication() ([]byte, int, bool) {
 	return androidManifestRawNew, lenDiff, false
 }
 
+// resIDAppName is android:name (0x01010003), the attribute the ADD path appends
+// to <application> when the host has no Application class of its own.
+const resIDAppName = 0x01010003
+
 // attrInsertOffset returns the offset inside the attribute list of the element
-// starting at elemStart where an attribute with name index nameStrIdx has to be
-// written.
+// starting at elemStart where an attribute whose name resolves to wantResID has
+// to be written, so the list stays sorted by ascending resource ID.
 //
-// aapt2 emits an element's attributes sorted by ascending name index, and the
-// framework resolves an attribute through the resource map keyed by that index.
-// Appending a fresh attribute at the end of the list therefore only works when
-// its name index is larger than every existing one: an android:name (index 3,
-// right after android:icon/label) tacked on after android:icon..roundIcon is
-// dropped silently - PackageManagerService then reports a null Application
-// class, the host runs with android.app.Application and the injected wrapper
-// never executes.
-func attrInsertOffset(data []byte, elemStart, attrCount, nameStrIdx int) int {
+// aapt2 stores an attribute name as a string-pool index; the resource map (chunk
+// 0x0180) maps that index to the real resource ID, and libandroidfw resolves an
+// attribute through the same map and locates it with a binary search over the
+// resolved IDs. Ordering by the raw name field (a pool index) therefore only
+// lands on the right position while the fresh attribute happens to carry the
+// largest pool index: appending android:appComponentFactory (0x0101057a) after
+// requestLegacyExternalStorage (0x01010603) is dropped silently, PackageManager-
+// Service then instantiates the framework Application and the injected factory
+// never runs. android:name (0x01010003) hides the same bug because its ID is
+// smaller than any other <application> attribute, so "append at the end" and
+// "insert sorted" coincide.
+func attrInsertOffset(data []byte, elemStart, attrCount int, wantResID uint32) int {
 	attrStart := int(leU16(data, elemStart+24))
 	attrSize := int(leU16(data, elemStart+26))
 	if attrSize == 0 {
 		attrSize = 20
 	}
 	base := elemStart + 16 + attrStart
+	ids, _, _ := readResMap(data)
 	for i := 0; i < attrCount; i++ {
-		if int(leU32(data, base+i*attrSize+4)) > nameStrIdx {
+		if attrNameResID(ids, leU32(data, base+i*attrSize+4)) > wantResID {
 			return base + i*attrSize
 		}
 	}
 	return base + attrCount*attrSize
+}
+
+// attrNameResID resolves an attribute's name field to a resource ID: a value
+// inside the resource map is a string-pool index (aapt2 layout), anything else
+// is already the resource ID (written directly by some packers).
+func attrNameResID(ids []uint32, raw uint32) uint32 {
+	if int(raw) < len(ids) && ids[raw] != 0 {
+		return ids[raw]
+	}
+	return raw
 }
 
 // addApplicationName adds android:name (0x01010003) to the <application>
@@ -246,7 +264,7 @@ func addApplicationName() []byte {
 	appSize := int(leU32(data, appStart+4))
 	appAttrCount := int(leU16(data, appStart+28))
 	newTotal += 20
-	insOff := attrInsertOffset(data, appStart, appAttrCount, int(nameStrIdx))
+	insOff := attrInsertOffset(data, appStart, appAttrCount, resIDAppName)
 	edits = append(edits,
 		axEdit{appStart + 4, u32bytes(uint32(appSize + 20)), true},
 		axEdit{appStart + 28, u16bytes(uint16(appAttrCount + 1)), true},

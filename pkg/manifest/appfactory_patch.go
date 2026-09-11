@@ -197,7 +197,7 @@ func PatchAppComponentFactory() {
 		appSize := int(leU32(data, appStart+4))
 		appAttrCount := int(leU16(data, appStart+28))
 		newTotal += 20
-		insOff := attrInsertOffset(data, appStart, appAttrCount, int(afNameStrIdx))
+		insOff := attrInsertOffset(data, appStart, appAttrCount, resIDAppComponentFactory)
 		edits = append(edits,
 			axEdit{appStart + 4, u32bytes(uint32(appSize + 20)), true},
 			axEdit{appStart + 28, u16bytes(uint16(appAttrCount + 1)), true},
