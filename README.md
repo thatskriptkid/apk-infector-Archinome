@@ -10,6 +10,44 @@ https://www.orderofsixangles.com/ru/2020/07/04/Infecting-android-app-the-new-way
 
 **Please read article berfore use it!**
 
+# Vectors
+
+Eight carriers, one payload. All of them patch the APK in place: the binary
+`AndroidManifest.xml` (AXML chunks: string pool, resource map, element chunks) and,
+where needed, `classes*.dex` and `lib/<abi>/` — never through an `apktool`
+decode/rebuild cycle.
+
+| `-o` | Vector | What it does |
+|---|---|---|
+| 1 | custom payload | dex wrapper: `android:name` of `<application>` points at the injected `InjectedApp` (which extends the host Application class) and runs `payload_custom.dex` |
+| 2 | frida gadget | same wrapper + `lib/<abi>/libfrida-gadget.so` (+ `.config.so`) — frida 17.18.0, listening on `127.0.0.1:27042` |
+| 3 | content provider | `<provider android:name="aaaaaaaaaaaa.ArchinomeProvider" android:authorities="<pkg>.archinome.provider">` as the first child of `<application>` |
+| 4 | trampoline | launcher activity is renamed to `aaaaaaaaaaaa.TrampolineActivity`, which runs the payload and then launches the real one |
+| 5 | broadcast receiver | `<receiver>` with `BOOT_COMPLETED` / `MY_PACKAGE_REPLACED` filters + `RECEIVE_BOOT_COMPLETED` |
+| 6 | appComponentFactory | `android:appComponentFactory="aaaaaaaaaaaa.ArchinomeAppComponentFactory"` (API 28+) |
+| 7 | native | payload `lib/<abi>/libarchin.so` attached to a host library (`chain` — a `DT_NEEDED` slot, `replace` — host lib renamed to `*_orig.so`, `append`) |
+| 8 | assets | the payload dex is sealed into `assets/archinome_payload.enc` (`ARCHN1` + AES-256-GCM) and decrypted at runtime |
+
+Environment knobs:
+
+```
+ARCHINOME_ADD_INTERNET=1                 add android.permission.INTERNET to the manifest
+                                         (vector 2 needs it on hosts that don't declare it)
+ARCHINOME_ASSETS_VECTOR=appfactory|provider|receiver
+                                         manifest carrier used by vector 8
+ARCHINOME_ASSETS_KEY=<passphrase>        key for the sealed assets blob
+ARCHINOME_ASSETS_DEX=<path.dex>          plain dex to seal into assets/
+ARCHINOME_NATIVE_HOST=<libfoo.so>        host library to hook (vector 7)
+ARCHINOME_NATIVE_MODE=chain|replace|append
+ARCHINOME_NATIVE_ABI=<arm64-v8a|...>     ABI to inject for
+ARCHINOME_NATIVE_LIB=<path.so>           payload .so (default native_payload/out/<abi>/libarchin.so)
+ARCHINOME_NATIVE_NAME=<libfoo.so>        name the payload is installed under
+```
+
+Per-vector traces a defender can look for, and the applicability of each vector
+over a 50-host corpus: `docs/detection-notes.md`, `docs/corpus-50-matrix.md`,
+`docs/v7-host-lib-selection.md`. Corpus harness: `tools/corpus/README.md`.
+
 # Prerequisite
 
 Install and add to PATH
@@ -26,9 +64,10 @@ main input.apk output.apk -o [option]
 options:
         1 - custom payload
         2 - frida inject
-```
-
-zipalign and siging with test key:
+        3 - provider inject
+        4 - trampoline inject
+        5 - receiver inject
+        6 - app comp...[truncated]
 
 ```
 ./build.sh
@@ -55,6 +94,38 @@ If nothing worked, then create an issue on github.
 PoC includes files from https://github.com/avast/apkparser.
 
 I am not a Go developer so forgive me for the quality of code
+
+# How this differs from other tools
+
+Patching is done **in place, in the binary (AXML) form**: the tool walks the AXML
+chunks (string pool, resource map, element chunks) and inserts/overwrites bytes in
+them, fixing up chunk sizes and offsets. There is no `apktool` decode/rebuild step,
+so `resources.arsc` and the resource XML files are never rewritten and cannot be
+broken by a rebuild. Attributes are inserted at the position AXML requires —
+sorted by **resolved resource id** — because the platform resolves attribute names
+through the resource map and a misordered attribute is silently ignored at runtime
+(`aapt2 dump xmltree` will happily print it anyway).
+
+| Tool | Manifest handling | Carriers / payload | Notes |
+|---|---|---|---|
+| **this PoC** | in-place AXML byte surgery (own parser/writer) | 8 vectors (dex wrapper, frida gadget, provider, trampoline, receiver, appComponentFactory, native `lib/<abi>`, sealed assets) + measured applicability over 50 hosts (400 runs) | Go, one binary; `zipalign`/`apksigner` are the only external tools |
+| [objection](https://github.com/sensepost/objection) `patchapk` | `apktool d`/`b` round-trip | frida gadget | known rebuild failures (apktool [issue #2374](https://github.com/iBotPeaches/Apktool/issues/2374), "Corrupt XML binary file") |
+| [apk.sh](https://github.com/ax/apk.sh) | shell around `apktool` | gadget; pull/decode scripts | same rebuild step |
+| [apkinjector](https://github.com/nitanmarcel/apkinjector) (archived 2025-12) | unpack/repack, bundles included | gadget (script / CodeShare) and `*.so` "loaded when an activity starts" | closest Python analogue of the gadget vector |
+| [pyfrida-gadget](https://pypi.org/project/frida-gadget/) | repack | gadget | also adds `android.permission.INTERNET` for the listen-mode gadget — this PoC does the same, but opt-in (`ARCHINOME_ADD_INTERNET=1`) |
+| [ACVPatcher](https://github.com/pilgun/acvpatcher) | [QuestPatcher.Axml](https://github.com/Lauriethefish/QuestPatcher.Axml): parses the whole AXML into a tree and **re-serializes** it (new string pool, resource map and element chunks; attributes re-sorted by resource id) | manifest *editing*: add `uses-permission`, add `receiver`, add `instrumentation`, remove tag/permission, replace DEX | C#; built for ACVTool; no payload, no vectors |
+| [apk-infector](https://github.com/PushpenderIndia/apkinfector) | binds a second APK/dex, shuffles permissions for AV evasion | msfvenom meterpreter | unrelated project that shares the name |
+| [ManifestEditor](https://github.com/WindySha/ManifestEditor), MT Manager, AXML Editor | AXML editing for humans | — | manual work, no injection pipeline |
+
+Two things worth stating plainly:
+
+* The techniques are not new. What this PoC brings is one pipeline that pushes the
+  same payload through eight carriers without leaving the binary manifest, plus
+  measured applicability of each vector instead of a claim
+  (`docs/corpus-50-matrix.md`).
+* Every vector is a repack, so the APK signature is always replaced — that is the
+  loudest artifact. Per-vector traces a defender can look for are in
+  `docs/detection-notes.md`.
 
 # TODO
 

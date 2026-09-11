@@ -78,12 +78,38 @@ cd "$REPO" || exit 1
 rm -f "$OUT"
 INJ=""; NMODE=""; INJECT_RC=1
 if [ "$V" = "7" ]; then
+  # Нативный вектор цепляется за библиотеку, которую хост реально грузит. Какая
+  # это либа - из APK не видно: замер /proc/<pid>/maps на оригинале (learn)
+  # отвечает на вопрос фактом. Без замера используется старая эвристика
+  # («самая большая либа»), но тогда прогон помечается отдельным признаком.
+  HOST_LIB=""; LEARN_NOTE=""; LEARN_CAND=""
+  if [ -x "$HERE/learn-host-lib.sh" ]; then
+    LEARN=$("$HERE/learn-host-lib.sh" "$APK" "$PKG" 2>/dev/null)
+    HOST_LIB=$(printf '%s\n' "$LEARN" | sed -n 's/^HOST_LIB=//p' | head -1)
+    LEARN_CAND=$(printf '%s\n' "$LEARN" | sed -n 's/^CANDIDATES=//p' | head -1)
+    LEARN_NOTE=$(printf '%s\n' "$LEARN" | sed -n 's/^NOTE=//p' | head -1)
+    LEARN_MEASURED=$(printf '%s\n' "$LEARN" | sed -n 's/^MEASURED=//p' | head -1)
+    echo "LEARN_CANDIDATES=${LEARN_CAND:-none}"
+    echo "LEARN_HOST_LIB=${HOST_LIB:-none}"
+    echo "LEARN_MEASURED=${LEARN_MEASURED:-0}"
+    LEARN_HOST_LIB="${HOST_LIB:-none}"
+    # Разделяем два разных «HOST_LIB пуст»: замер сделан и хост действительно
+    # ничего не грузит (вектор неприменим) vs замер не удался (maps закрыт, нет
+    # root) — во втором случае остаёмся на эвристике инжектора и NA не объявляем.
+    [ "$LEARN_MEASURED" = "1" ] && [ -z "$HOST_LIB" ] && LEARN_NA=1 || LEARN_NA=0
+    echo "LEARN_NA=$LEARN_NA"
+    echo "LEARN_NOTE=$(printf '%s' "$LEARN_NOTE" | sanitize)"
+  fi
   # chain-режиму нативного вектора нужен свободный слот в DT_NEEDED, а он есть
   # не у каждой хостовой библиотеки; откатываемся к replace/append. Собираем
   # вывод ВСЕХ попыток, чтобы причина отказа не потерялась за последней.
   for M in chain replace append; do
     rm -f "$OUT"
-    M_OUT=$(ARCHINOME_NATIVE_MODE=$M $TO "$ARCH" "$APK" "$OUT" -o 7 2>&1); MRC=$?
+    if [ -n "$HOST_LIB" ]; then
+      M_OUT=$(ARCHINOME_NATIVE_MODE=$M ARCHINOME_NATIVE_HOST="$HOST_LIB" $TO "$ARCH" "$APK" "$OUT" -o 7 2>&1); MRC=$?
+    else
+      M_OUT=$(ARCHINOME_NATIVE_MODE=$M $TO "$ARCH" "$APK" "$OUT" -o 7 2>&1); MRC=$?
+    fi
     INJECT_RC=$MRC
     INJ="${INJ}${INJ:+$'\n'}[native-mode=$M rc=$MRC] ${M_OUT}"
     if [ -s "$OUT" ]; then NMODE=$M; break; fi
@@ -92,6 +118,16 @@ if [ "$V" = "7" ]; then
 elif [ "$V" = "8" ]; then
   INJ=$(ARCHINOME_ASSETS_VECTOR=${ARCHINOME_ASSETS_VECTOR:-appfactory} $TO "$ARCH" "$APK" "$OUT" -o 8 2>&1); INJECT_RC=$?
 else
+  # Вектор 2 (frida gadget, listen-режим) требует android.permission.INTERNET:
+  # без него платформа не даёт создать сокет, и прогон вырождается в NA. Половина
+  # реальных приложений это разрешение не объявляет, поэтому харнесс (не сам
+  # инжектор) добавляет его явным флагом — и печатает, что именно он изменил.
+  if [ "$V" = "2" ] && ! "$B/aapt2" dump permissions "$APK" 2>/dev/null | grep -qa 'android.permission.INTERNET'; then
+    export ARCHINOME_ADD_INTERNET=1
+    echo "ADDED_INTERNET_PERMISSION=1"
+  else
+    echo "ADDED_INTERNET_PERMISSION=0"
+  fi
   INJ=$($TO "$ARCH" "$APK" "$OUT" -o "$V" 2>&1); INJECT_RC=$?
 fi
 echo "INJECT_RC=$INJECT_RC"
@@ -157,11 +193,14 @@ LOG=$(adb logcat -d 2>/dev/null)
 # the spot. The only honest check is the gadget itself: frida-server compatible,
 # a single process named Gadget, listening on 27042. That needs the host to hold
 # android.permission.INTERNET - the platform denies socket creation to app
-# domains without it, which is exactly how the gadget dies.
+# domains without it, which is exactly how the gadget dies. The harness therefore
+# sets ARCHINOME_ADD_INTERNET=1 during injection whenever the host does not
+# declare it (see ADDED_INTERNET_PERMISSION above), so this branch now only fires
+# if that edit itself failed on this manifest.
 if [ "$TAG" = "GADGET_CHECK" ]; then
   if ! "$B/aapt2" dump permissions "$SIGNED" 2>/dev/null | grep -qa 'android.permission.INTERNET'; then
     echo "PAYLOAD=na"
-    echo "FATAL_NOTE=host has no android.permission.INTERNET: a listen-mode gadget cannot create a socket"
+    echo "FATAL_NOTE=signed APK declares no android.permission.INTERNET: a listen-mode gadget cannot open its socket (harness requested the permission: ADDED_INTERNET_PERMISSION=${ADDED_INTERNET_PERMISSION:-?})"
     echo "APP_ALIVE=$([ -n "$PID" ] && [ "$PID" != none ] && echo 1 || echo 0)"
     echo "RESULT=NA_NO_INTERNET"
     adb shell am force-stop "$PKG" >/dev/null 2>&1
@@ -174,7 +213,17 @@ if [ "$TAG" = "GADGET_CHECK" ]; then
   # весь список процессов устройства, и вердикт нельзя выдавать как «gadget не встал»
   GADGET_OTHER=$("${FRIDA_BIN:-frida-ps}" -H 127.0.0.1:27042 2>/dev/null | awk 'NR>1' | wc -l | tr -d ' ')
   adb forward --remove tcp:27042 >/dev/null 2>&1
+  # Процесс хоста может умереть раньше, чем мы постучимся в порт: часть хостов
+  # падает в собственных потоках через секунду после старта (com.chess.clock -
+  # SIGILL в NDK MediaCodec_), часть является виджет-приложениями. Тогда порта
+  # уже нет, хотя gadget успел подняться. Собственная строка gadget'а в logcat
+  # «Frida   : Listening on 127.0.0.1 TCP port 27042» доказывает, что он
+  # исполнился в процессе хоста, и это не слабее проверки порта: её печатает
+  # gadget внутри приложения, а не frida-server (у того свой процесс и своя
+  # область logcat). Без этого различия честный OK уходил в NO_PAYLOAD.
+  GADGET_LISTENED=$(echo "$LOG" | grep -acE 'Frida *: *Listening on 127\.0\.0\.1 TCP port 27042')
   echo "PAYLOAD=$GADGET_HITS"
+  echo "GADGET_LISTENED=$GADGET_LISTENED"
   echo "PAYLOAD_LINES=$GADGET_LINES"
   echo "CRASH=$(echo "$LOG" | grep -acE 'Failed to start|Abort message')"
   if [ "$GADGET_HITS" -eq 0 ] && [ "${GADGET_OTHER:-0}" -gt 2 ]; then
@@ -188,7 +237,14 @@ if [ "$TAG" = "GADGET_CHECK" ]; then
     echo "FATAL_NOTE=$(echo "$LOG" | grep -aE 'Failed to start|Abort message' | head -2 | tr '\n' '|' | cut -c1-300)"
   fi
   echo "APP_ALIVE=$([ -n "$PID" ] && [ "$PID" != none ] && echo 1 || echo 0)"
-  if [ "$GADGET_HITS" -gt 0 ]; then echo "RESULT=PAYLOAD_OK"; else echo "RESULT=NO_PAYLOAD"; fi
+  if [ "$GADGET_HITS" -gt 0 ]; then
+    echo "RESULT=PAYLOAD_OK"
+  elif [ "${GADGET_LISTENED:-0}" -gt 0 ]; then
+    echo "NA_NOTE=процесс хоста завершился до проверки порта, но gadget поднялся: в logcat его собственная строка 'Frida: Listening on 127.0.0.1 TCP port 27042'"
+    echo "RESULT=PAYLOAD_OK"
+  else
+    echo "RESULT=NO_PAYLOAD"
+  fi
   adb shell am force-stop "$PKG" >/dev/null 2>&1
   exit 0
 fi
@@ -198,6 +254,17 @@ echo "PAYLOAD_LINES=$(echo "$LOG" | grep -aE "$TAG" | head -3 | tr '\n' '|' | cu
 echo "CRASH=$(echo "$LOG" | grep -acE 'FATAL EXCEPTION|ClassNotFoundException|Unable to instantiate application')"
 echo "FATAL_NOTE=$(echo "$LOG" | grep -aE 'FATAL EXCEPTION|Unable to instantiate|ClassNotFoundException' | head -2 | tr '\n' '|' | cut -c1-300)"
 if [ -n "$PID" ] && [ "$PID" != "none" ]; then echo "APP_ALIVE=1"; else echo "APP_ALIVE=0"; fi
-if [ "$(echo "$LOG" | grep -acE "$TAG")" -gt 0 ]; then echo "RESULT=PAYLOAD_OK"; else echo "RESULT=NO_PAYLOAD"; fi
+if [ "$(echo "$LOG" | grep -acE "$TAG")" -gt 0 ]; then
+  echo "RESULT=PAYLOAD_OK"
+elif [ "$V" = "7" ] && [ "${LEARN_NA:-0}" = "1" ]; then
+  # Инжект мог быть технически корректен, но цепляться не за что: замер maps на
+  # оригинале показал, что при холодном старте хост не грузит ни одной своей
+  # lib/<abi>/*.so. Это неприменимость вектора на таком хосте, а не сбой, и
+  # вердикт обязан быть отличим от NO_PAYLOAD.
+  echo "NA_NOTE=вектор 7: при холодном старте хост не загрузил ни одной lib/<abi>/*.so (замер /proc/<pid>/maps на оригинале); NATIVE_MODE=${NMODE:-none}"
+  echo "RESULT=NA_NO_LOADED_HOST_LIB"
+else
+  echo "RESULT=NO_PAYLOAD"
+fi
 adb shell am force-stop "$PKG" >/dev/null 2>&1
 exit 0

@@ -127,7 +127,21 @@ bash harness.sh apk/com.foxdebug.acode.apk com.foxdebug.acode 5 RECEIVER_PAYLOAD
 
 Вектор 7 перебирает нативные режимы `chain → replace → append` и возвращает
 `NATIVE_MODE=<режим>|none`; причина отказа при этом собирается по **всем**
-попыткам, а не только по последней.
+попыткам, а не только по последней. Перед инжектом вектор 7 замеряет
+`/proc/<pid>/maps` оригинала (`learn-host-lib.sh`) и подставляет найденную либу в
+`ARCHINOME_NATIVE_HOST` — статически узнать, какую свою либу хост грузит при
+старте, нельзя. Ключи `LEARN_HOST_LIB`/`LEARN_CANDIDATES`/`LEARN_NA`/`LEARN_NOTE`
+попадают в вывод прогона; если замер не нашёл ни одной загруженной либы, вердикт —
+`NA_NO_LOADED_HOST_LIB` (неприменимость), а не `NO_PAYLOAD` (см. §5).
+
+Вектор 2 требует `android.permission.INTERNET` (listen-режим gadget'а не может
+создать сокет без него). Харнесс смотрит разрешения оригинала и, если их нет,
+включает `ARCHINOME_ADD_INTERNET=1` — тогда инжектор дописывает
+`<uses-permission>` в бинарный манифест, а в выводе появляется
+`ADDED_INTERNET_PERMISSION=1`. Вердикт при этом считается по-прежнему по gadget'у:
+порт 27042 (`frida-ps -H 127.0.0.1:27042` → один `Gadget`) **или** собственная строка
+gadget'а в logcat (`Frida: Listening on 127.0.0.1 TCP port 27042`) для хостов,
+которые завершают процесс раньше, чем мы стучимся в порт.
 
 ## 3. Прогнать матрицу
 
@@ -136,7 +150,8 @@ export KS_PASS='...'
 python3 matrix.py
 ```
 
-20 приложений × 8 векторов = 160 прогонов. **Возобновляемо**: пара
+Корпус в `targets.tsv` — 50 приложений × 8 векторов = 400 прогонов.
+**Возобновляемо**: пара
 `(package, vector)`, уже присутствующая в `matrix.tsv`, пропускается — после
 обрыва просто запустите `matrix.py` снова. Прогресс виден в stdout и в
 `matrix.log`.
@@ -179,7 +194,11 @@ TSV, первая строка — заголовок, по строке на п
 * `INJECT_FAIL` → `INJECT_MSG` — **весь** текст инжектора (stdout+stderr);
 * `INSTALL_FAIL` → `INSTALL_MSG` — вывод `adb install`;
 * `NO_PAYLOAD` → `FATAL_NOTE`/`PAYLOAD_LINES` — фатальные строки logcat;
-* `SIGN_FAIL`/`ALIGN_FAIL`/`SETUP_FAIL` → `SIGN_MSG`/`INJECT_MSG`.
+* `SIGN_FAIL`/`ALIGN_FAIL`/`SETUP_FAIL` → `SIGN_MSG`/`INJECT_MSG`;
+* `NA_NO_LOADED_HOST_LIB` → `NA_NOTE` (что именно замерил `learn-host-lib.sh`).
+* Для вектора 2 в `note` дописывается провенанс: `харнесс добавил
+  android.permission.INTERNET (у хоста его нет)` / `gadget подтверждён по своей
+  строке в logcat (порт уже не отвечал)`; для вектора 7 — `host_lib=<lib>`.
 
 ## 5. Как читать вердикты
 
@@ -189,6 +208,8 @@ TSV, первая строка — заголовок, по строке на п
 | `NO_PAYLOAD` | APK установился и запустился, но тега payload в logcat нет — внедрение формально прошло, а код не выполнился. |
 | `INJECT_FAIL` | `archinome` не создал выходной APK. Причина в `note` (`INJECT_MSG`). |
 | `INSTALL_FAIL` | APK внедрён, но не ставится на устройство. Причина в `note` (`INSTALL_MSG`). |
+| `NA_NO_INTERNET` | хост не заявил `android.permission.INTERNET`, а listen-режим gadget'а (вектор 2) без него не поднимается. |
+| `NA_NO_LOADED_HOST_LIB` | замер `maps` на оригинале не нашёл ни одной загруженной `lib/<abi>/*.so` — вектору 7 не за что цепляться при холодном старте. |
 | `ALIGN_FAIL` / `SIGN_FAIL` | не удалось выровнять или подписать APK (для `SIGN_FAIL` причина в `note`). |
 | `SETUP_FAIL` | не задан обязательный `KS_PASS` и т.п. |
 | `HARNESS_ERROR` | `harness.sh` не напечатал `RESULT` (например, скрипта нет на месте) — вывод harness целиком уходит в `note`. |

