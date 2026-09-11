@@ -10,9 +10,15 @@ var ManifestBinaryPath, _ = filepath.Abs("AndroidManifest.xml")
 var OldAppNameNormalized string
 
 type Payload_option_type int
+
 const (
-	Custom_payload Payload_option_type = 1
-	Frida_payload Payload_option_type = 2
+	Custom_payload              Payload_option_type = 1
+	Frida_payload               Payload_option_type = 2
+	Provider_payload            Payload_option_type = 3
+	Trampoline_payload          Payload_option_type = 4
+	Receiver_payload            Payload_option_type = 5
+	AppComponentFactory_payload Payload_option_type = 6
+	Native_payload              Payload_option_type = 7
 )
 
 var Payload_option int
@@ -55,22 +61,22 @@ func Cleanup() {
 	}
 
 	filePaths := []string{
-        "AndroidManifest_plaintext.xml",
-        "AndroidManifest.xml",
-        "manifest_strings.dmp",
+		"AndroidManifest_plaintext.xml",
+		"AndroidManifest.xml",
+		"manifest_strings.dmp",
 		"InjectedApp_patched.dex",
-    }
+	}
 
-    for _, filePath := range filePaths {
-        // Check if file exists
-        if _, err := os.Stat(filePath); err == nil {
-            // Attempt to delete the file
-            err := os.Remove(filePath)
-            if err != nil {
-                log.Printf("Error deleting file: %v\n", err)
-            } else {
-                log.Printf("File deleted successfully: %s\n", filePath)
-            }
-        }
-    }
+	for _, filePath := range filePaths {
+		// Check if file exists
+		if _, err := os.Stat(filePath); err == nil {
+			// Attempt to delete the file
+			err := os.Remove(filePath)
+			if err != nil {
+				log.Printf("Error deleting file: %v\n", err)
+			} else {
+				log.Printf("File deleted successfully: %s\n", filePath)
+			}
+		}
+	}
 }

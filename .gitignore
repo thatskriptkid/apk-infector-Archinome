@@ -4,3 +4,17 @@ apks/*
 apkinfector.log
 InjectedApp_patched.dex
 .vscode
+# build artefacts
+native_payload/out/
+testapp_native/build/
+archinome
+elfinfo
+# generated/build dirs and large test artefacts (sources + payload_*.dex are kept)
+*/build/
+testapp/*.apk
+testapp/*.apkm
+testapp_native/*.apk
+testapp_native/*.apk.idsig
+testapp/build_multi/
+testapp/build/
+testapp/*.idsig

