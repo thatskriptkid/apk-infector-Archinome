@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Legacy-style target: built with aapt1 (UTF-8 string pool), a custom
+     Application class, an already-declared provider and receiver, two launcher
+     activities including an <activity-alias>, an assets/ dir and no native
+     libraries. Used to check that the vectors do not depend on the shape of the
+     target APK. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.example.legacyapp"
+    android:versionCode="1"
+    android:versionName="1.0">
+
+    <application android:name=".MyApp" android:label="LegacyApp">
+        <activity android:name=".MainActivity" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+        </activity>
+        <activity android:name=".SecondActivity" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+        </activity>
+        <activity-alias android:name=".AliasActivity" android:exported="true"
+            android:targetActivity=".SecondActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+        </activity-alias>
+        <provider android:name=".LegacyProvider" android:exported="false"
+            android:authorities="com.example.legacyapp.provider"/>
+        <receiver android:name=".LegacyReceiver" android:exported="true">
+            <intent-filter>
+                <action android:name="com.example.legacyapp.PING"/>
+            </intent-filter>
+        </receiver>
+    </application>
+</manifest>

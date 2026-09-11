@@ -2,36 +2,36 @@ package manifest
 
 // Trampoline (entry-activity substitution) injection vector.
 //
-// Redirects EVERY MAIN/LAUNCHER component (both <activity> and
-// <activity-alias>) through aaaaaaaaaaaa.TrampolineActivity. Each redirected
-// component carries a <meta-data android:name="archinome.target"
-// android:value="<original class>"/> child, so the trampoline can resolve the
-// original entry class from its own resolved ActivityInfo (getComponentName()
-// returns the alias when launched via one) and relaunch it. The original entry
-// class(es) are re-declared as non-launcher <activity> elements (with their
-// original attributes preserved) so they stay declared and startable.
+// Takes over the app's launcher entry: the first *enabled* launcher <activity>
+// is renamed to aaaaaaaaaaaa.TrampolineActivity, which runs the payload and then
+// relaunches the original entry class. Every other MAIN/LAUNCHER component
+// (extra <activity> or <activity-alias>) simply loses its launcher
+// <intent-filter>, so exactly one launcher entry survives — the trampoline.
 //
-// Runtime flow: launcher icon -> (activity or alias) -> TrampolineActivity
-// .onCreate -> payload -> startActivity(original) -> finish(). The payload
-// therefore runs on every cold launch of the app via any of its launcher icons,
-// without touching android:name on <application> or any class in the original
-// dex.
+// The original entry class is passed in the meta-data *key*
+// ("archinome.target:<fqcn>"), not in android:value: an AXML attribute name is
+// a string-pool index and the resource map is indexed by that same number, so
+// an attribute whose name string is not already covered by the host resource
+// map cannot be introduced — the platform then rejects the APK at install time
+// ("<activity-alias> does not specify android:targetActivity") even though the
+// file looks self-consistent to aapt2. For the same reason no <activity-alias>
+// is synthesised for extra launchers.
+//
+// Runtime flow: launcher icon -> TrampolineActivity.onCreate -> payload ->
+// startActivity(original) -> finish(). The payload therefore runs on every cold
+// launch, without touching android:name on <application> or any class in the
+// original dex. The original entry class is re-declared as a non-launcher
+// <activity> (attributes preserved) so it stays startable by explicit intent.
 //
 // The patch is pure binary AXML surgery (same approach as PatchProvider):
-//   1. append strings (trampoline class, "meta-data", "archinome.target", each
-//      original target FQN, "activity-alias" when needed) to the string pool
-//   2. ensure the "value" (0x01010024) and "targetActivity" (0x01010202)
-//      attribute resource ids are in the resource map ("name" 0x01010003 is
-//      always present)
-//   3. rename each launcher component's entry attribute (android:name for
-//      <activity>, android:targetActivity for <activity-alias>) to the
-//      trampoline class; a second+ distinct launcher <activity> is converted to
-//      an <activity-alias> instead (two <activity> elements may not share a
-//      name)
-//   4. insert <meta-data>...</meta-data> as the first child of each component
-//   5. insert a non-launcher <activity android:name="<original>"/> (original
-//      attributes preserved) after <application>
-//   6. fix the AXML total size
+//   1. append strings (trampoline class, "meta-data", "archinome.target:<fqcn>"
+//      per distinct entry class, each class FQN) to the string pool
+//   2. rename the host launcher <activity>'s android:name to the trampoline
+//      class and insert <meta-data>...</meta-data> as its first child
+//   3. delete the launcher <intent-filter> of every other launcher component
+//   4. re-declare the consumed entry class as a non-launcher <activity> after
+//      <application>
+//   5. fix the AXML total size
 
 import (
 	"encoding/binary"
@@ -52,6 +52,7 @@ const (
 
 	resIDValue          = 0x01010024
 	resIDTargetActivity = 0x01010202
+	resIDEnabled        = 0x0101000e
 
 	actionMainStr       = "android.intent.action.MAIN"
 	categoryLauncherStr = "android.intent.category.LAUNCHER"
@@ -173,33 +174,58 @@ func firstTagStart(data []byte) int {
 	return -1
 }
 
-// hasLauncherFilter reports whether the component tag at off contains an
-// <intent-filter> with a MAIN action and a LAUNCHER category.
-func hasLauncherFilter(data []byte, pool *stringPool, resIds []uint32, off int) bool {
+// isLauncherFilter reports whether the <intent-filter> element is a
+// MAIN/LAUNCHER filter.
+func isLauncherFilter(data []byte, pool *stringPool, resIds []uint32, filter xmlElem) bool {
+	hasMain, hasLauncher := false, false
+	for _, ifc := range childElements(data, filter.startOff) {
+		tag := elementName(pool, data, ifc)
+		a, ok := findAttrByResID(data, ifc.startOff, resIds, resIDName)
+		if !ok {
+			continue
+		}
+		val := attrStringValue(pool, data, a)
+		if tag == "action" && val == actionMainStr {
+			hasMain = true
+		}
+		if tag == "category" && val == categoryLauncherStr {
+			hasLauncher = true
+		}
+	}
+	return hasMain && hasLauncher
+}
+
+// launcherFilter returns the MAIN/LAUNCHER <intent-filter> child of the
+// component at off, if any.
+func launcherFilter(data []byte, pool *stringPool, resIds []uint32, off int) *xmlElem {
 	for _, child := range childElements(data, off) {
 		if elementName(pool, data, child) != "intent-filter" {
 			continue
 		}
-		hasMain, hasLauncher := false, false
-		for _, ifc := range childElements(data, child.startOff) {
-			tag := elementName(pool, data, ifc)
-			a, ok := findAttrByResID(data, ifc.startOff, resIds, resIDName)
-			if !ok {
-				continue
-			}
-			val := attrStringValue(pool, data, a)
-			if tag == "action" && val == actionMainStr {
-				hasMain = true
-			}
-			if tag == "category" && val == categoryLauncherStr {
-				hasLauncher = true
-			}
-		}
-		if hasMain && hasLauncher {
-			return true
+		if isLauncherFilter(data, pool, resIds, child) {
+			return &child
 		}
 	}
-	return false
+	return nil
+}
+
+// disabledAttr returns the android:enabled attribute of the component at off
+// when it is explicitly false (hidden launchers are toggled at runtime).
+func disabledAttr(data []byte, off int, resIds []uint32) (xmlAttr, bool) {
+	a, ok := findAttrByResID(data, off, resIds, resIDEnabled)
+	if !ok {
+		return xmlAttr{}, false
+	}
+	if a.dataType == 0x12 && a.data == 0 {
+		return a, true
+	}
+	return xmlAttr{}, false
+}
+
+// hasLauncherFilter reports whether the component tag at off contains an
+// <intent-filter> with a MAIN action and a LAUNCHER category.
+func hasLauncherFilter(data []byte, pool *stringPool, resIds []uint32, off int) bool {
+	return launcherFilter(data, pool, resIds, off) != nil
 }
 
 // launcherComponent describes one MAIN/LAUNCHER component under <application>.
@@ -299,7 +325,7 @@ func buildStartTag(tagStrIdx uint32, attrs []elemAttr) []byte {
 	binary.LittleEndian.PutUint16(b[0:], chunkTagStart)
 	binary.LittleEndian.PutUint16(b[2:], 0x10)
 	binary.LittleEndian.PutUint32(b[4:], size)
-	binary.LittleEndian.PutUint32(b[8:], 0)          // lineNumber
+	binary.LittleEndian.PutUint32(b[8:], 0)           // lineNumber
 	binary.LittleEndian.PutUint32(b[12:], 0xFFFFFFFF) // comment
 	binary.LittleEndian.PutUint32(b[16:], 0xFFFFFFFF) // ns
 	binary.LittleEndian.PutUint32(b[20:], tagStrIdx)  // element name
@@ -320,7 +346,7 @@ func buildEndTag(tagStrIdx uint32) []byte {
 	binary.LittleEndian.PutUint16(b[0:], chunkTagEnd)
 	binary.LittleEndian.PutUint16(b[2:], 0x10)
 	binary.LittleEndian.PutUint32(b[4:], 24)
-	binary.LittleEndian.PutUint32(b[8:], 0)          // lineNumber
+	binary.LittleEndian.PutUint32(b[8:], 0)           // lineNumber
 	binary.LittleEndian.PutUint32(b[12:], 0xFFFFFFFF) // comment
 	binary.LittleEndian.PutUint32(b[16:], 0xFFFFFFFF) // ns
 	binary.LittleEndian.PutUint32(b[20:], tagStrIdx)  // element name
@@ -365,20 +391,13 @@ func PatchTrampoline() {
 	if nameResIdx < 0 {
 		log.Panic("'name' attribute resource id not found in resource map")
 	}
-	valueResIdx := indexOfU32(resIds, resIDValue)
-	targetResIdx := indexOfU32(resIds, resIDTargetActivity)
-	var newResIDBytes []byte
-	nextIdx := len(resIds)
-	if valueResIdx < 0 {
-		valueResIdx = nextIdx
-		nextIdx++
-		newResIDBytes = append(newResIDBytes, u32bytes(resIDValue)...)
-	}
-	if targetResIdx < 0 {
-		targetResIdx = nextIdx
-		nextIdx++
-		newResIDBytes = append(newResIDBytes, u32bytes(resIDTargetActivity)...)
-	}
+	// resource-map slots that have to be filled/appended for attribute names
+	// this patch introduces (see attrName below)
+	needIDAt := map[int]uint32{}
+	// AXML attribute names are *string-pool* indices and the resource map is
+	// indexed by that very number, so an attribute name can only be introduced
+	// by landing its string at the index the map gets extended to (which is why
+	// the resolver below appends the st...[truncated]
 
 	// launcher components
 	comps := findLauncherComponents(data, pool, resIds, pkg)
@@ -407,11 +426,35 @@ func PatchTrampoline() {
 		return i
 	}
 	trampolineClassIdx := addStr(trampolineClassName)
+
+	// append without deduplication — used when the pool already holds the
+	// wanted text at a slot that carries a different attribute resource id
+	addStrRaw := func(s string) uint32 {
+		i := uint32(pool.stringCount + len(newStrings))
+		newStrings = append(newStrings, s)
+		return i
+	}
+	// attrName resolves the pool index to use as an attribute name for `name`
+	// (resource id `resID`), recording the resource-map slot to fill in: the
+	// name string must sit at exactly the index the map is extended to, or the
+	// platform sees an attribute without a name ("<activity-alias> does not
+	// specify android:targetActivity").
+	attrName := func(name string, resID uint32) uint32 {
+		idx := int(addStr(name))
+		if idx < len(resIds) && resIds[idx] != 0 && resIds[idx] != resID {
+			idx = int(addStrRaw(name))
+		}
+		if idx >= len(resIds) || resIds[idx] == 0 {
+			needIDAt[idx] = resID
+		}
+		return uint32(idx)
+	}
+	valueResIdx := attrName("value", resIDValue)
 	metaTagIdx := addStr(metaDataTagStr)
 	metaKeyIdx := addStr(metaDataKey)
-	targetIdx := make(map[string]uint32, len(targets))
+	classIdx := make(map[string]uint32, len(targets))
 	for _, t := range targets {
-		targetIdx[t] = addStr(t)
+		classIdx[t] = addStr(t)
 	}
 
 	actTagIdx := pool.indexOf(data, "activity")
@@ -419,36 +462,26 @@ func PatchTrampoline() {
 		log.Panic("'activity' string not found")
 	}
 
-	// conversion to <activity-alias> is only needed when there is more than one
-	// distinct launcher <activity> (rare); aliases are redirected in place.
-	activityCount := 0
-	for _, c := range comps {
-		if c.isActivity {
-			activityCount++
-		}
-	}
-	var activityAliasIdx uint32
-	if activityCount > 1 {
-		activityAliasIdx = addStr(activityAliasStr)
-	}
-
-	// host: the first launcher <activity>, if any
+	// host: the first launcher <activity> that is not disabled in the manifest
+	// (hidden launchers ship android:enabled="0" and are toggled at runtime; a
+	// disabled host would leave the app without a working launcher icon)
 	hostIdx := -1
 	for i, c := range comps {
-		if c.isActivity {
+		if !c.isActivity {
+			continue
+		}
+		if _, disabled := disabledAttr(data, c.startOff, resIds); !disabled {
 			hostIdx = i
 			break
 		}
 	}
-
-	// unique alias names for extra launcher activities — computed up front so
-	// they land in the string pool before it is encoded below
-	extraAliasNameIdx := make(map[int]uint32)
-	for i, c := range comps {
-		if i == hostIdx || !c.isActivity {
-			continue
+	if hostIdx < 0 {
+		for i, c := range comps {
+			if c.isActivity {
+				hostIdx = i
+				break
+			}
 		}
-		extraAliasNameIdx[i] = addStr(c.origTarget + aliasNameSuffix)
 	}
 
 	// encode appended strings
@@ -469,7 +502,9 @@ func PatchTrampoline() {
 		newPoolSize += pad
 	}
 
-	// meta-data element builder
+	// meta-data element builder: android:name (key) + android:value (original
+	// entry class). The installer rejects a <meta-data> without value/resource,
+	// so the key-only encoding cannot be used.
 	buildMeta := func(valIdx uint32) []byte {
 		start := buildStartTag(metaTagIdx, []elemAttr{
 			{uint32(androidNs), uint32(nameResIdx), metaKeyIdx, 0x03, metaKeyIdx},
@@ -516,91 +551,96 @@ func PatchTrampoline() {
 		edit{pool.off + pool.size, 0, newStringBytes},
 	)
 
-	// --- resource map append ---
-	if len(newResIDBytes) > 0 {
-		edits = append(edits,
-			edit{resMapOff + 4, 4, u32bytes(uint32(resMapSizeOrig + len(newResIDBytes)))},
-			edit{resMapOff + resMapSizeOrig, 0, newResIDBytes},
-		)
+	// --- resource map: resource ids for attribute names introduced above ---
+	if len(needIDAt) > 0 {
+		newResMapCount := resMapCount
+		for idx := range needIDAt {
+			if idx+1 > newResMapCount {
+				newResMapCount = idx + 1
+			}
+		}
+		for idx, id := range needIDAt {
+			if idx < resMapCount {
+				// free slot inside the existing map: fill it in place
+				edits = append(edits, edit{resMapOff + 8 + idx*4, 4, u32bytes(id)})
+			}
+		}
+		if grow := newResMapCount - resMapCount; grow > 0 {
+			block := make([]byte, grow*4)
+			for idx, id := range needIDAt {
+				if idx >= resMapCount {
+					block[(idx-resMapCount)*4] = byte(id)
+					block[(idx-resMapCount)*4+1] = byte(id >> 8)
+					block[(idx-resMapCount)*4+2] = byte(id >> 16)
+					block[(idx-resMapCount)*4+3] = byte(id >> 24)
+				}
+			}
+			edits = append(edits,
+				edit{resMapOff + 4, 4, u32bytes(uint32(resMapSizeOrig + len(block)))},
+				edit{resMapOff + resMapSizeOrig, 0, block},
+			)
+		}
 	}
 
-	// --- host component ---
+	// --- host component: becomes the trampoline ---
 	if hostIdx >= 0 {
 		host := comps[hostIdx]
-		// rename host activity name -> trampoline
+		// rename the host activity -> trampoline
 		edits = append(edits,
 			edit{host.entryAttr.off + 8, 4, u32bytes(trampolineClassIdx)},
 			edit{host.entryAttr.off + 16, 4, u32bytes(trampolineClassIdx)},
 		)
+		// a host disabled in the manifest would be invisible to the launcher
+		if a, disabled := disabledAttr(data, host.startOff, resIds); disabled {
+			edits = append(edits, edit{a.off + 16, 4, u32bytes(1)})
+		}
 		// meta-data as first child
-		edits = append(edits, edit{host.startOff + int(leU32(data, host.startOff+4)), 0, buildMeta(targetIdx[host.origTarget])})
+		edits = append(edits, edit{host.startOff + int(leU32(data, host.startOff+4)), 0, buildMeta(classIdx[host.origTarget])})
 	} else {
-		// alias-only: create a bare trampoline <activity> (with meta-data) as a
-		// top-level application child; the aliases redirect to it.
-		newActStart := buildStartTag(uint32(actTagIdx), []elemAttr{
+		// alias-only host: declare the trampoline as a plain <activity> carrying
+		// a copy of the first alias' MAIN/LAUNCHER intent-filter (so the app keeps
+		// exactly one launcher entry) plus the meta-data
+		newAct := buildStartTag(uint32(actTagIdx), []elemAttr{
 			{uint32(androidNs), uint32(nameResIdx), trampolineClassIdx, 0x03, trampolineClassIdx},
 		})
-		meta := buildMeta(targetIdx[comps[0].origTarget])
-		edits = append(edits, edit{appInsertOff, 0, append(append(newActStart, meta...), buildEndTag(uint32(actTagIdx))...)})
+		if ch := launcherFilter(data, pool, resIds, comps[0].startOff); ch != nil {
+			newAct = append(newAct, data[ch.startOff:ch.endOff]...)
+		}
+		newAct = append(newAct, buildMeta(classIdx[comps[0].origTarget])...)
+		newAct = append(newAct, buildEndTag(uint32(actTagIdx))...)
+		edits = append(edits, edit{appInsertOff, 0, newAct})
 	}
 
-	// --- redirect every other launcher component ---
-	// Top-level application inserts (re-declarations) are accumulated here so
-	// that multiple inserts at the same offset stay deterministically ordered.
-	var appInserts []byte
+	// --- every other launcher component loses its MAIN/LAUNCHER filter ---
+	// No <activity-alias> is synthesised for extra launchers: an alias needs
+	// android:targetActivity, whose name string is usually absent from the host
+	// resource map, and the platform then refuses to install the APK.
 	for i, c := range comps {
 		if i == hostIdx {
 			continue
 		}
-		if c.isActivity {
-			// second+ launcher activity: convert to <activity-alias>. The alias
-			// takes a UNIQUE name (origTarget + suffix) so it cannot collide
-			// with the non-launcher <activity> re-declared for the original
-			// class below (a same-name alias+activity pair would loop).
-			aliasNameIdx := extraAliasNameIdx[i]
-			aliasAttrs := make([]elemAttr, 0, len(elementAttrs(data, c.startOff))+1)
-			for _, a := range elementAttrs(data, c.startOff) {
-				if int(a.name) < len(resIds) && resIds[a.name] == resIDName {
-					a.rawValue = aliasNameIdx
-					a.data = aliasNameIdx
-				}
-				aliasAttrs = append(aliasAttrs, elemAttr{a.ns, a.name, a.rawValue, a.dataType, a.data})
+		for _, ch := range childElements(data, c.startOff) {
+			if elementName(pool, data, ch) != "intent-filter" || !isLauncherFilter(data, pool, resIds, ch) {
+				continue
 			}
-			aliasAttrs = append(aliasAttrs, elemAttr{uint32(androidNs), uint32(targetResIdx), trampolineClassIdx, 0x03, trampolineClassIdx})
-			aliasStart := buildStartTag(uint32(activityAliasIdx), aliasAttrs)
-			aliasEnd := buildEndTag(uint32(activityAliasIdx))
-			startSize := int(leU32(data, c.startOff+4))
-			endTagOff := skipElement(data, c.startOff) - 24
-			edits = append(edits,
-				edit{c.startOff, startSize, aliasStart},
-				edit{c.startOff + startSize, 0, buildMeta(targetIdx[c.origTarget])},
-				edit{endTagOff, 24, aliasEnd},
-			)
-		} else {
-			// alias: rename android:targetActivity -> trampoline
-			edits = append(edits,
-				edit{c.entryAttr.off + 8, 4, u32bytes(trampolineClassIdx)},
-				edit{c.entryAttr.off + 16, 4, u32bytes(trampolineClassIdx)},
-			)
-			edits = append(edits, edit{c.startOff + int(leU32(data, c.startOff+4)), 0, buildMeta(targetIdx[c.origTarget])})
+			edits = append(edits, edit{ch.startOff, ch.endOff - ch.startOff, nil})
 		}
 	}
 
-	// --- re-declare consumed targets (original launcher activities) as
-	// non-launcher <activity> elements, preserving their attributes ---
-	for _, c := range comps {
-		if !c.isActivity {
-			continue
+	// --- re-declare the consumed host class as a non-launcher <activity> so it
+	// stays declared and startable by explicit intent (its launcher filter now
+	// lives on the trampoline) ---
+	if hostIdx >= 0 {
+		host := comps[hostIdx]
+		attrs := copyAttrsExceptName(data, host.startOff, resIds)
+		attrs = append([]elemAttr{{uint32(androidNs), uint32(nameResIdx), classIdx[host.origTarget], 0x03, classIdx[host.origTarget]}}, attrs...)
+		for i := range attrs {
+			if int(attrs[i].nameIdx) < len(resIds) && resIds[attrs[i].nameIdx] == resIDEnabled && attrs[i].dataType == 0x12 {
+				attrs[i].data = 1
+			}
 		}
-		attrs := copyAttrsExceptName(data, c.startOff, resIds)
-		attrs = append([]elemAttr{{uint32(androidNs), uint32(nameResIdx), targetIdx[c.origTarget], 0x03, targetIdx[c.origTarget]}}, attrs...)
-		newActStart := buildStartTag(uint32(actTagIdx), attrs)
-		newActEnd := buildEndTag(uint32(actTagIdx))
-		appInserts = append(appInserts, newActStart...)
-		appInserts = append(appInserts, newActEnd...)
-	}
-	if len(appInserts) > 0 {
-		edits = append(edits, edit{appInsertOff, 0, appInserts})
+		newAct := append(buildStartTag(uint32(actTagIdx), attrs), buildEndTag(uint32(actTagIdx))...)
+		edits = append(edits, edit{appInsertOff, 0, newAct})
 	}
 
 	// --- total size ---

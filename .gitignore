@@ -18,3 +18,15 @@ testapp_native/*.apk.idsig
 testapp/build_multi/
 testapp/build/
 testapp/*.idsig
+
+# tool working files (left behind by a run) — root-anchored so fixture
+# AndroidManifest.xml files stay tracked
+/AndroidManifest.xml
+/AndroidManifest_plaintext.xml
+/manifest_strings.dmp
+/apkinfector.log
+
+# legacy-shape regression target (aapt1-built, custom Application, provider/receiver, 2 launchers + alias)
+testapp_legacy/*.apk
+testapp_legacy/*.idsig
+testapp_legacy/build/

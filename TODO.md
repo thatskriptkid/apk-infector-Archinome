@@ -112,3 +112,38 @@
     - Перед перезаписью read-only dex его надо **удалить** (каталог writable, так что unlink разрешён) — иначе `FileOutputStream` падает на EACCES.
     - **Свежеустановленное приложение находится в состоянии *stopped*** и не получает широковещаний, пока его не запустят: `MY_PACKAGE_REPLACED` не пришёл, а `am force-stop` возвращает stopped-флаг обратно. Пришлось поднять версию (`versionCode` 2→4) и ставить обновление на уже запущенное приложение. `BOOT_COMPLETED` из shell отправить нельзя (`SecurityException`, uid 2000).
     - `Payload` получал `null` вместо Context в `provider`/`receiver`-путях (в `install()` Context не прокидывался) — исправлено, теперь `ctx=true`.
+
+---
+
+## Аудит универсальности (2026-09-11) — проверка «не заточено под WhatsApp/testapp»
+
+**Метод.** Собрал враждебный корпус и прогнал вектора на нём без рута (рут — только чтение data-dir):
+- `testapp_legacy/` (новый фикстур, legacy-aapt): **свой `Application`**, уже существующие `provider` **и** `receiver`, **два** launcher-`activity` + `<activity-alias>`, `assets/`, **нет** `lib/`;
+- реальный сторонний APK: F-Droid 1.13.1 (два launcher-входа, один — скрытый «panic» с `enabled=0`, свой `FDroidApp`);
+- split-APK: WhatsApp 2.26.35.75 (`install-multiple` — base + сплиты, **все** переподписаны одним ключом, иначе `signatures are inconsistent`);
+- регресс на `testapp` и WhatsApp.
+
+Проверка каждого вектора: инжект без паники → `adb install` → payload в logcat (фильтр **по pid**) → **свой код хоста жив** (`Application.onCreate`, существующий провайдер, реальная target-активити) → число launcher-записей (`aapt2 dump badging`) → md5 установленного APK == подписанному на хосте.
+
+**Итог по векторам:**
+
+| # | Вектор | Вердикт |
+|---|--------|---------|
+| 1 | Custom (Application hijack) | **сломан** — см. ниже |
+| 2 | Frida gadget | не проверялся сквозным путём: нужен внешний `frida-gadget.so`, которого нет в репозитории |
+| 3 | ContentProvider | универсален: legacy (свой Application + уже есть провайдер), F-Droid, WhatsApp, testapp |
+| 4 | Trampoline | универсален **после переделки**: legacy (2 activity + alias), F-Droid (скрытый launcher), testapp, WhatsApp |
+| 5 | BroadcastReceiver | универсален: legacy (receiver уже был), testapp, WhatsApp |
+| 6 | AppComponentFactory | универсален: ADD (testapp, legacy — свой `MyApp` поднимается штатно), REPOINT (WhatsApp, F-Droid) |
+| 7 | Native (.so) | не универсален **по природе цели**: нужен `lib/<abi>/` в APK (на legacy-фикстуре без либ — честный отказ), стратегия `append` недоступна на clang/lld-либах |
+| 8 | Assets + DexClassLoader | универсален: legacy (триггеры appfactory/provider/receiver), F-Droid, WhatsApp (SHA-256 dex совпал) |
+
+**Что починено в этом аудите**
+- **Trampoline (вектор 4) не устанавливался на реальных приложениях.** `android:targetActivity` (0x01010202) обычно **отсутствует** в resource map хоста (aapt2 мапит только использованные имена), поэтому синтезированный `<activity-alias>` давал `INSTALL_PARSE_FAILED_MANIFEST_MALFORMED`. Переделано: трамплин **забирает единственный launcher** — переименование `android:name` хост-активити + **удаление** MAIN/LAUNCHER `<intent-filter>` у остальных компонентов (только удаления и перезапись значений, ни одного нового имени атрибута). Плюс: хост выбирается как первый **не**`enabled=0` launcher-activity (скрытые/«panic»-иконки включаются только в рантайме), и `<meta-data>` требует `android:value`, поэтому key-only схема отброшена.
+- **Вектор 1 больше не выпускает «кирпич».** `dex.Patch()` правит `InjectedApp.dex` **in-place** и переименовывает placeholder-класс `z.z.z` в класс Application хоста; на текущем фикстуре переименование не попадает в строку, на которую ссылается суперкласс обёртки. Плюс относительное `android:name=".MyApp"` нормализовалось в несуществующий `L/MyApp;`. Итог: ART не может загрузить обёртку → приложение падает на старте с `ClassNotFoundException` (проверено на устройстве). Сейчас: `manifest.HostAppClassName()` даёт FQN, а `pkg/dex.Validate` + `ValidateSuperclass` **отказываются писать APK** с внятным сообщением (проверка структуры, наличия класса, сортировки `string_ids` — ART ищет строки бинарным поиском).
+
+**Открытые вопросы**
+- Вектор 1: нужен либо настоящий dex-writer (переименование класса с пересортировкой `string_ids`), либо обёртка-делегат (читает FQN хоста из meta-data; ломает приложения, которые кастуют `getApplication()`). Требует решения — какой путь брать.
+- Вектор 1 не умеет ADD: без `android:name` в `<application>` патч паникует (`Application name wasn't found`) — нужен ADD-путь как в provider/appfactory.
+- Тот же ресмап-риск остаётся в `receiver_patch.go` (добавляет `android:exported` через дописывание resmap) — на хостах без этого слота патч может дать неустановимый APK; стоит перенести правило «не расширять resmap для валидируемых атрибутов» на все патчеры.
+- Вектор 2 (frida) и «холодные» триггеры receiver (ребут) сквозным путём не перепроверялись.
