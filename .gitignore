@@ -42,3 +42,11 @@ tools/corpus/ins_raw.txt
 tools/corpus/*.part
 tools/corpus/__pycache__/
 *.apk
+
+# ключи подписи и любые хранилища секретов — никогда не в репозиторий
+*.jks
+*.keystore
+*.p12
+*.pfx
+.env
+*.env
