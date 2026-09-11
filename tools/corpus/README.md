@@ -20,6 +20,11 @@
 
 Сами APK (400+ МиБ) в git не хранятся — их всегда качает `dl.sh`.
 
+**Код живёт в репозитории, данные — в `CORPUS_DIR`.** `matrix.py` запускает `harness.sh`
+рядом с собой (репозиторный файл), а не тот, что лежит в `CORPUS_DIR`: устаревшая копия
+харнесса там однажды подменила логику и тихо выдала `NO_PAYLOAD` на векторе 2 (в старой
+86-строчной копии не было проверки gadget'а вообще). Правишь обвязку — правь в репозитории.
+
 ## Требования
 
 * macOS (используются `gtimeout`/`timeout`, `curl`), Android SDK `build-tools`
@@ -42,7 +47,7 @@
 | `KEY_ALIAS` | alias ключа в keystore | `my-key-alias-2` |
 | `JAVA_HOME` | JDK для apksigner | homebrew openjdk@21 |
 | `BUILD_TOOLS` | каталог build-tools (aapt2/zipalign/apksigner/d8) | `~/Library/Android/sdk/build-tools/35.0.0` |
-| `CORPUS_DIR` | каталог корпуса (там же создаётся `work/`) | каталог самого скрипта |
+| `CORPUS_DIR` | каталог **данных** корпуса: `targets.tsv`, `meta.tsv`, `apk/`, `work/`, `matrix.tsv` | каталог самого скрипта |
 
 **Пароль приходит только из окружения.** Литеральных паролей в репозитории нет:
 если `KS_PASS` не задан, `harness.sh` печатает `RESULT=SETUP_FAIL` и выходит с
@@ -111,8 +116,8 @@ bash harness.sh apk/com.foxdebug.acode.apk com.foxdebug.acode 5 RECEIVER_PAYLOAD
 
 | V | Вектор | Тег-маркер |
 | --- | --- | --- |
-| 1 | custom payload | `PAYLOAD_CUSTOM\|ARCHINOME` |
-| 2 | frida gadget | `FRIDA\|ARCHINOME` |
+| 1 | custom payload | `HELL` (payload печатает `Log.i("HELL", …)`) |
+| 2 | frida gadget | `GADGET_CHECK` — не тег, а интерфейс gadget'а (`frida-ps` → `Gadget`) |
 | 3 | provider | `PROVIDER_PAYLOAD_EXECUTED` |
 | 4 | trampoline | `TRAMPOLINE_PAYLOAD_EXECUTED` |
 | 5 | receiver | `RECEIVER_PAYLOAD_EXECUTED` |

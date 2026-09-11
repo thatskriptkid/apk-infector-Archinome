@@ -179,6 +179,11 @@ if [ "$TAG" = "GADGET_CHECK" ]; then
   echo "CRASH=$(echo "$LOG" | grep -acE 'Failed to start|Abort message')"
   if [ "$GADGET_HITS" -eq 0 ] && [ "${GADGET_OTHER:-0}" -gt 2 ]; then
     echo "FATAL_NOTE=на 27042 отвечает не gadget, а frida-server (процессов $GADGET_OTHER): уведи сервер на другой порт (frida-server -l 127.0.0.1:27099) и повтори"
+  elif [ "$GADGET_HITS" -eq 0 ]; then
+    # gadget не ответил: без этого текста прогон неотличим от «инжект не сработал»
+    ALIVE_NOTE=нет
+    [ -n "$PID" ] && [ "$PID" != none ] && ALIVE_NOTE=да
+    echo "FATAL_NOTE=gadget не ответил на 27042: процессов в frida-ps=${GADGET_OTHER:-?}, ответ='${GADGET_LINES:-пусто}', процесс жив=$ALIVE_NOTE; logcat=$(echo "$LOG" | grep -aiE 'frida|gadget|Abort message|Failed to start' | head -2 | tr '\n' '|' | cut -c1-220)"
   else
     echo "FATAL_NOTE=$(echo "$LOG" | grep -aE 'Failed to start|Abort message' | head -2 | tr '\n' '|' | cut -c1-300)"
   fi

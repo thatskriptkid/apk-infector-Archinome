@@ -30,7 +30,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 W = os.environ.get("CORPUS_DIR", HERE)
 
 TAGS = {
-    1: "PAYLOAD_CUSTOM|ARCHINOME",
+    # вектор 1 ничего не логирует под своим именем: payload_custom.dex пишет
+    # Log.i("HELL", "Hello, I'm a malicious payload")
+    1: "HELL",
     # вектор 2 не логирует: инжектор только вызывает System.loadLibrary, поэтому
     # критерий — интерфейс самого gadget'а (frida-ps -> один процесс Gadget)
     2: "GADGET_CHECK",
@@ -109,7 +111,7 @@ def main():
     if not os.path.exists(tsv) or os.path.getsize(tsv) == 0:
         with open(tsv, "a") as fh:
             fh.write("\t".join(HEADER) + "\n")
-    harness = os.path.join(W, "harness.sh")
+    harness = os.path.join(HERE, "harness.sh")
     apps = load_apps()
     already = done()
     todo = [(a, v) for a in apps for v in VECTORS if (a[0], str(v)) not in already]
