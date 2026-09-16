@@ -153,6 +153,6 @@ not sorted at index 2`, причём значения выглядели мус�
 ## Воспроизведение
 
 ```sh
-cd /Users/test/Documents/projects/apk-infector-Archinome-PoC
+# из корня клонированного репозитория
 ARCHINOME_CORPUS_DIR=/tmp/corpus go test ./pkg/dex/ -run TestCorpusRoundTripFidelity -v -count=1
 ```

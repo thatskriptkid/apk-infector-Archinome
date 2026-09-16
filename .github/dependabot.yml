@@ -1,0 +1,25 @@
+version: 2
+updates:
+  # Go modules: grouped so a routine bump is one PR, with a cooldown so a
+  # freshly published (and occasionally hijacked) release ages before adoption.
+  - package-ecosystem: gomod
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    cooldown:
+      default-days: 7
+    groups:
+      go-modules:
+        patterns: ["*"]
+
+  # Workflow actions are pinned to full commit SHAs; this keeps the pins fresh.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      github-actions:
+        patterns: ["*"]

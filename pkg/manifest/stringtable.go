@@ -6,11 +6,11 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"os"
 	"path/filepath"
 	"strings"
 	"unicode/utf16"
 	"unicode/utf8"
-	"os"
 )
 
 const (

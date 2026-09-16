@@ -1,28 +1,90 @@
-# This workflow will build a golang project
-# For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-go
+# Build, vet and test the Go toolchain.
+#
+# Hardening rules for this file:
+#   * every action is pinned to a full commit SHA (Dependabot keeps the pins
+#     fresh, see .github/dependabot.yml);
+#   * permissions start empty and are granted per job;
+#   * no workflow trigger has access to secrets - `pull_request` from a fork
+#     gets a read-only token.
 
 name: Go
 
 on:
   push:
-    branches: [ "master" ]
+    branches: ["master"]
   pull_request:
-    branches: [ "master" ]
+    branches: ["master"]
+
+permissions: {}
+
+# A new push to the same ref cancels the run it supersedes.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-
   build:
+    name: build/vet/test (go ${{ matrix.go }})
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        go: ["1.22.x", "stable"]
     steps:
-    - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
-    - name: Set up Go
-      uses: actions/setup-go@v4
-      with:
-        go-version: '1.22'
+      - name: Set up Go
+        uses: actions/setup-go@7b8cf10d4e4a01d4992d18a89f4d7dc5a3e6d6f4 # v4
+        with:
+          go-version: ${{ matrix.go }}
+          cache: true
 
-    - name: Build
-      run: go build -v ./...
+      - name: gofmt
+        run: |
+          # Kaitai-compiler output is excluded: it is generated, not hand-written.
+          unformatted="$(gofmt -l . | grep -vE '^(pkg/dex/kaitai_dex\.go|pkg/dex/vlq_base128_le\.go)$' || true)"
+          if [ -n "$unformatted" ]; then
+            echo "gofmt required for:"
+            echo "$unformatted"
+            exit 1
+          fi
 
-    - name: Test
-      run: go test -v ./...
+      - name: go vet
+        run: go vet ./...
+
+      - name: build
+        run: go build -v ./...
+
+      - name: test (race detector)
+        run: go test -race -v ./...
+
+  govulncheck:
+    name: govulncheck
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@7b8cf10d4e4a01d4992d18a89f4d7dc5a3e6d6f4 # v4
+        with:
+          go-version: "1.22.x"
+          cache: true
+
+      - name: Install govulncheck (pinned)
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
+
+      - name: Add GOPATH/bin to PATH
+        run: echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Run govulncheck
+        run: govulncheck ./...

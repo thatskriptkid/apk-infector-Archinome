@@ -222,8 +222,8 @@ func putAttr(b []byte, off int, ns, name, rawValue uint32, dataType uint8, data 
 	binary.LittleEndian.PutUint32(b[off+4:], name)
 	binary.LittleEndian.PutUint32(b[off+8:], rawValue)
 	binary.LittleEndian.PutUint16(b[off+12:], 8) // Res_value.size
-	b[off+14] = 0                                 // res0
-	b[off+15] = dataType                          // dataType
+	b[off+14] = 0                                // res0
+	b[off+15] = dataType                         // dataType
 	binary.LittleEndian.PutUint32(b[off+16:], data)
 }
 
@@ -233,7 +233,7 @@ func buildProviderStartTag(androidNs, nameResIdx, authResIdx, tagStrIdx, classSt
 	binary.LittleEndian.PutUint16(b[0:], chunkTagStart)
 	binary.LittleEndian.PutUint16(b[2:], 0x10)
 	binary.LittleEndian.PutUint32(b[4:], size)
-	binary.LittleEndian.PutUint32(b[8:], 0)          // lineNumber
+	binary.LittleEndian.PutUint32(b[8:], 0)           // lineNumber
 	binary.LittleEndian.PutUint32(b[12:], 0xFFFFFFFF) // comment
 	// ResXMLTree_attrExt
 	binary.LittleEndian.PutUint32(b[16:], 0xFFFFFFFF) // ns (element has none)
@@ -256,7 +256,7 @@ func buildProviderEndTag(tagStrIdx uint32) []byte {
 	binary.LittleEndian.PutUint16(b[0:], chunkTagEnd)
 	binary.LittleEndian.PutUint16(b[2:], 0x10)
 	binary.LittleEndian.PutUint32(b[4:], 24)
-	binary.LittleEndian.PutUint32(b[8:], 0)          // lineNumber
+	binary.LittleEndian.PutUint32(b[8:], 0)           // lineNumber
 	binary.LittleEndian.PutUint32(b[12:], 0xFFFFFFFF) // comment
 	binary.LittleEndian.PutUint32(b[16:], 0xFFFFFFFF) // ns
 	binary.LittleEndian.PutUint32(b[20:], tagStrIdx)  // name = "provider"

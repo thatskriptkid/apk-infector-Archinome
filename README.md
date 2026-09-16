@@ -69,9 +69,25 @@ Per-vector traces a defender can look for, and the applicability of each vector
 over a 50-host corpus: `docs/detection-notes.md`, `docs/corpus-50-matrix.md`,
 `docs/v7-host-lib-selection.md`. Corpus harness: `tools/corpus/README.md`.
 
+# Build
+
+Go 1.22 or newer, and nothing else:
+
+```sh
+go build -o archinome ./cmd/archinome
+./archinome input.apk output.apk -o 8
+```
+
+The payload dex files (`payload_*.dex`) are committed, so building the tool does
+not involve `d8`, `javac` or an Android SDK. There is no `apktool` step anywhere:
+the APK is read and written as a zip, the manifest is patched as binary AXML, and
+`classes*.dex` is patched through the parser/encoder in `pkg/dex`.
+
 # Prerequisite
 
-Install and add to PATH
+Install and add to PATH - these are needed only to **sign or install** a patched
+APK (or to rebuild a payload class from its Java source under `*_payload/`), not
+to build or run the injector:
 
 1. Android SDK
 2. zipalign
@@ -122,7 +138,8 @@ If there are problems make sure that:
 If nothing helped, try to play with the `-min-api` parameter when compiling payload classes.
 If nothing worked, then create an issue on github.
 
-PoC includes files from https://github.com/avast/apkparser.
+PoC includes files from https://github.com/avast/apkparser - see
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for licences.
 
 I am not a Go developer so forgive me for the quality of code
 
@@ -139,9 +156,16 @@ through the resource map and a misordered attribute is silently ignored at runti
 
 | Tool | Manifest handling | Carriers / payload | Notes |
 |---|---|---|---|
-| **this PoC** | in-place AXML byte surgery (own parser/writer) | 14 carriers defined, 12 working (dex wrapper, frida gadget, provider, trampoline, receiver, appComponentFactory, native `lib/<abi>`, sealed assets, native sideload, `<instrumentation>`, `android:backupAgent`, `android:zygotePreloadName`; service/Application `code_item` patch pending) + measured applicability over a 50-host corpus | Go, one binary; `zipalign`/`apksigner` are the only external tools |
+| **this PoC** | in-place AXML byte surgery (own parser/writer) | 14 carriers defined, 12 working (dex wrapper, frida gadget, provider, trampoline, receiver, appComponentFactory, native `lib/<abi>`, sealed assets, service `code_item` patch, native sideload, Application `code_item` patch, `<instrumentation>`, `android:backupAgent`, `android:zygotePreloadName`) + measured applicability over a 50-host corpus; the `code_item` patches leave the manifest byte-identical to the developer's | Go, one binary; `zipalign`/`apksigner` are the only external tools |
 | [objection](https://github.com/sensepost/objection) `patchapk` | `apktool d`/`b` round-trip | frida gadget | known rebuild failures (apktool [issue #2374](https://github.com/iBotPeaches/Apktool/issues/2374), "Corrupt XML binary file") |
 | [apk.sh](https://github.com/ax/apk.sh) | shell around `apktool` | gadget; pull/decode scripts | same rebuild step |
+
+# Contributing and security
+
+- [CONTRIBUTING.md](CONTRIBUTING.md) - build, tests, how to add a vector.
+- [SECURITY.md](SECURITY.md) - how to report a vulnerability privately.
+- [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) - licences of bundled and
+  derived code.
 | [apkinjector](https://github.com/nitanmarcel/apkinjector) (archived 2025-12) | unpack/repack, bundles included | gadget (script / CodeShare) and `*.so` "loaded when an activity starts" | closest Python analogue of the gadget vector |
 | [pyfrida-gadget](https://pypi.org/project/frida-gadget/) | repack | gadget | also adds `android.permission.INTERNET` for the listen-mode gadget — this PoC does the same, but opt-in (`ARCHINOME_ADD_INTERNET=1`) |
 | [ACVPatcher](https://github.com/pilgun/acvpatcher) | [QuestPatcher.Axml](https://github.com/Lauriethefish/QuestPatcher.Axml): parses the whole AXML into a tree and **re-serializes** it (new string pool, resource map and element chunks; attributes re-sorted by resource id) | manifest *editing*: add `uses-permission`, add `receiver`, add `instrumentation`, remove tag/permission, replace DEX | C#; built for ACVTool; no payload, no vectors |

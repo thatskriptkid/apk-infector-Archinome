@@ -3,10 +3,10 @@ package manifest
 
 import (
 	"fmt"
+	"github.com/thatskriptkid/apk-infector-Archinome-PoC/internal/utils"
 	"io"
 	"log"
 	"os"
-	"github.com/thatskriptkid/apk-infector-Archinome-PoC/internal/utils"
 )
 
 type ApkParser struct {
@@ -24,7 +24,9 @@ func (p *ApkParser) SaveManifestToDisk() {
 	file := p.zip.File["AndroidManifest.xml"]
 
 	if file == nil {
-		fmt.Errorf("Failed to find %s in APK!", "AndroidManifest.xml")
+		// Nothing to open: the next call would nil-deref. Fail loudly instead of
+		// silently losing the error (go vet: "result of fmt.Errorf call not used").
+		panic(fmt.Errorf("failed to find %s in APK", "AndroidManifest.xml"))
 	}
 
 	if err := file.Open(); err != nil {
