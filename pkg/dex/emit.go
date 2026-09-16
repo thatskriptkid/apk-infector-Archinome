@@ -603,21 +603,40 @@ func (x *encoder) writeHeaderAndTables(out []byte, mapOff int) error {
 
 // ------------------------------------------------------------ data item bodies
 
+// emitTypeLists writes every proto-parameter and interface type_list.
+//
+// The entries are written as ushort (type_item.type_idx, dex-format.md); the
+// list is 4-byte aligned but the entries themselves are 2 bytes each, so a
+// list with an odd number of entries leaves the buffer 2 bytes off alignment
+// and the next item's own align(4) pads it. Writing 4-byte entries here made
+// every emitted dex unreadable for anything that follows the spec: ART read
+// the padding as entries and the tool's own Parse rejected a re-encoded file.
 func (x *encoder) emitTypeLists() (protoParamsOff, ifaceOff []uint32, err error) {
+	writeList := func(types []uint32) (int, error) {
+		x.e.align(4)
+		off := x.e.tell()
+		x.e.u32(uint32(len(types)))
+		for _, t := range types {
+			nt, err := x.m.typ(t)
+			if err != nil {
+				return 0, err
+			}
+			if nt > 0xffff {
+				return 0, fmt.Errorf("dex: type index %d does not fit in a type_list entry", nt)
+			}
+			x.e.u16(uint16(nt))
+		}
+		return off, nil
+	}
+
 	protoParamsOff = make([]uint32, len(x.d.Protos))
 	for i, p := range x.d.Protos {
 		if len(p.Params) == 0 {
 			continue
 		}
-		x.e.align(4)
-		off := x.e.tell()
-		x.e.u32(uint32(len(p.Params)))
-		for _, t := range p.Params {
-			nt, err := x.m.typ(t)
-			if err != nil {
-				return nil, nil, err
-			}
-			x.e.u32(nt)
+		off, err := writeList(p.Params)
+		if err != nil {
+			return nil, nil, err
 		}
 		x.e.touch(mapTypeList, off)
 		protoParamsOff[i] = uint32(off)
@@ -627,15 +646,9 @@ func (x *encoder) emitTypeLists() (protoParamsOff, ifaceOff []uint32, err error)
 		if len(c.Interfaces) == 0 {
 			continue
 		}
-		x.e.align(4)
-		off := x.e.tell()
-		x.e.u32(uint32(len(c.Interfaces)))
-		for _, t := range c.Interfaces {
-			nt, err := x.m.typ(t)
-			if err != nil {
-				return nil, nil, err
-			}
-			x.e.u32(nt)
+		off, err := writeList(c.Interfaces)
+		if err != nil {
+			return nil, nil, err
 		}
 		x.e.touch(mapTypeList, off)
 		ifaceOff[i] = uint32(off)
@@ -1003,7 +1016,7 @@ func (x *encoder) remapInsns(insns []uint16) ([]uint16, error) {
 	out := make([]uint16, len(insns))
 	copy(out, insns)
 	for i := 0; i < len(insns); {
-		f := insnTable[insns[i]>>8]
+		f := insnTable[insnOpcode(insns[i])]
 		if f.width < 1 || i+f.width > len(insns) {
 			return nil, fmt.Errorf("dex: instruction at code unit %d overruns the stream", i)
 		}
@@ -1078,7 +1091,8 @@ func (x *encoder) writeDebugInfo(dbg *DebugInfo) error {
 		x.e.uleb(np)
 	}
 	for _, op := range dbg.Ops {
-		x.e.uleb(op.Op)
+		// One byte, mirroring the parser: the opcode is not a uleb128.
+		x.e.u8(byte(op.Op))
 		for i, a := range op.Args {
 			kind := dbgPlain
 			if i < len(op.Kind) {

@@ -12,7 +12,7 @@ https://www.orderofsixangles.com/ru/2020/07/04/Infecting-android-app-the-new-way
 
 # Vectors
 
-Eight carriers, one payload. All of them patch the APK in place: the binary
+Fourteen carriers are defined, twelve of them ship as working vectors. All of them patch the APK in place: the binary
 `AndroidManifest.xml` (AXML chunks: string pool, resource map, element chunks) and,
 where needed, `classes*.dex` and `lib/<abi>/` — never through an `apktool`
 decode/rebuild cycle.
@@ -27,6 +27,26 @@ decode/rebuild cycle.
 | 6 | appComponentFactory | `android:appComponentFactory="aaaaaaaaaaaa.ArchinomeAppComponentFactory"` (API 28+) |
 | 7 | native | payload `lib/<abi>/libarchin.so` attached to a host library (`chain` — a `DT_NEEDED` slot, `replace` — host lib renamed to `*_orig.so`, `append`) |
 | 8 | assets | the payload dex is sealed into `assets/archinome_payload.enc` (`ARCHN1` + AES-256-GCM) and decrypted at runtime |
+| 9 | service code patch | manifest untouched: the `run()` call is spliced into `<clinit>` (else `<init>`) of every class the host declares as `<service android:name>` — right before the closing `return-*`; adds `classesN.dex` (`payload_service.dex`, `Laaaaaaaaaaaa/ServicePatch`). **Not implemented yet**: the learn step runs and reports the classes (`CODEPATCH_TARGETS`), the `code_item` splice is pending — see the design note in `pkg/dex/codepatch.go`; hosts are skipped with `NA_CODE_PATCH_PENDING` |
+| 10 | native sideload | no dex is added: the host's own `System.loadLibrary("x")` calls are read, a name `libx.so` the host asks for but does not ship is picked, the payload is installed under that name in `lib/<abi>/` and its placeholder `DT_NEEDED` is re-pointed to `libc.so` |
+| 11 | Application code patch | manifest untouched: the same call is spliced into `<clinit>`/`<init>` of the host Application class named by `<application android:name>`; adds `classesN.dex` (`payload_apppatch.dex`, `Laaaaaaaaaaaa/AppPatch`). **Not implemented yet**, same pending `code_item` splice as vector 9 |
+| 12 | `<instrumentation>` | `<instrumentation android:name="aaaaaaaaaaaa.ArchinomeInstrumentation" android:targetPackage="<pkg>" android:functionalTest="true"/>` added as a child of `<manifest>` (before `<application>`); payload in the Instrumentation subclass `<init>` |
+| 13 | `android:backupAgent` | `android:backupAgent="aaaaaaaaaaaa.ArchinomeBackupAgent"` added to `<application>` and `android:allowBackup` forced to `true` (an existing `false` is rewritten in place); payload in the BackupAgent subclass `<init>` |
+| 14 | `android:zygotePreloadName` | `android:zygotePreloadName="aaaaaaaaaaaa.ArchinomeZygotePreload"` added to `<application>` plus a `<service android:name="aaaaaaaaaaaa.ArchinomeZygoteService" android:exported="true" android:isolatedProcess="true" android:useAppZygote="true"/>`; payload in `ZygotePreload.doPreload` |
+
+Two things separate the new vectors from 1–8:
+
+* **9 and 11 leave the manifest byte-for-byte as the developer wrote it** — no new
+  component names, no attribute edits, nothing to diff against a reference
+  manifest; the only traces are an extra `classesN.dex` and a rewritten method
+  body. The cost is on the attacker's side: patching a `code_item` means recoding
+  the host dex (checksums and offset tables are recomputed). That splice is the
+  open work in this PoC: the vectors currently learn their targets and stop.
+* **10 and 12–14 need an external trigger** rather than the ordinary app launch:
+  10 fires from the host's own `loadLibrary` call, 12 from
+  `am instrument -w <pkg>/aaaaaaaaaaaa.ArchinomeInstrumentation`, 13 from
+  `bmgr backupnow <pkg>` (or `bmgr run`), 14 from
+  `am start-service -n <pkg>/aaaaaaaaaaaa.ArchinomeZygoteService`.
 
 Environment knobs:
 
@@ -68,8 +88,18 @@ options:
         3 - provider inject
         4 - trampoline inject
         5 - receiver inject
-        6 - app comp...[truncated]
-
+        6 - app component factory inject
+        7 - native payload (lib injection, see ARCHINOME_NATIVE_* env)
+        8 - encrypted assets payload (dex in assets/, runtime DexClassLoader + reflection,
+            trigger selectable via ARCHINOME_ASSETS_VECTOR=appfactory|provider|receiver)
+        9 - code patch of the services the host declares (manifest untouched)
+        10 - native sideload: payload under a library name the host asks for but does
+            not ship (learned from the app's own loadLibrary calls)
+        11 - code patch of the host Application class (manifest untouched)
+        12 - <instrumentation> carrier (trigger: am instrument)
+        13 - android:backupAgent carrier (trigger: bmgr backupnow / auto-backup)
+        14 - android:zygotePreloadName carrier + app-zygote service (trigger: the
+            isolated service is started)
 ```
 ./build.sh
 ```
@@ -109,7 +139,7 @@ through the resource map and a misordered attribute is silently ignored at runti
 
 | Tool | Manifest handling | Carriers / payload | Notes |
 |---|---|---|---|
-| **this PoC** | in-place AXML byte surgery (own parser/writer) | 8 vectors (dex wrapper, frida gadget, provider, trampoline, receiver, appComponentFactory, native `lib/<abi>`, sealed assets) + measured applicability over 50 hosts (400 runs) | Go, one binary; `zipalign`/`apksigner` are the only external tools |
+| **this PoC** | in-place AXML byte surgery (own parser/writer) | 14 carriers defined, 12 working (dex wrapper, frida gadget, provider, trampoline, receiver, appComponentFactory, native `lib/<abi>`, sealed assets, native sideload, `<instrumentation>`, `android:backupAgent`, `android:zygotePreloadName`; service/Application `code_item` patch pending) + measured applicability over a 50-host corpus | Go, one binary; `zipalign`/`apksigner` are the only external tools |
 | [objection](https://github.com/sensepost/objection) `patchapk` | `apktool d`/`b` round-trip | frida gadget | known rebuild failures (apktool [issue #2374](https://github.com/iBotPeaches/Apktool/issues/2374), "Corrupt XML binary file") |
 | [apk.sh](https://github.com/ax/apk.sh) | shell around `apktool` | gadget; pull/decode scripts | same rebuild step |
 | [apkinjector](https://github.com/nitanmarcel/apkinjector) (archived 2025-12) | unpack/repack, bundles included | gadget (script / CodeShare) and `*.so` "loaded when an activity starts" | closest Python analogue of the gadget vector |
@@ -121,9 +151,9 @@ through the resource map and a misordered attribute is silently ignored at runti
 Two things worth stating plainly:
 
 * The techniques are not new. What this PoC brings is one pipeline that pushes the
-  same payload through eight carriers without leaving the binary manifest, plus
-  measured applicability of each vector instead of a claim
-  (`docs/corpus-50-matrix.md`).
+  same payload through twelve working carriers without leaving the binary manifest
+  (vectors 9 and 11 do not touch the manifest at all), plus measured applicability
+  of each vector instead of a claim (`docs/corpus-50-matrix.md`).
 * Every vector is a repack, so the APK signature is always replaced — that is the
   loudest artifact. Per-vector traces a defender can look for are in
   `docs/detection-notes.md`.

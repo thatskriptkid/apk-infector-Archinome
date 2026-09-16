@@ -42,9 +42,30 @@ TAGS = {
     6: "APPFACTORY_PAYLOAD_EXECUTED",
     7: "NATIVE_PAYLOAD_CTOR",
     8: "ASSET_PAYLOAD_EXECUTED",
+    # 9 и 11 — code patch: payload вызывается из тела метода, который хост
+    # исполняет сам (<clinit>/<init> сервиса или Application-класса), поэтому
+    # триггер — обычный запуск приложения
+    9: "SERVICE_PATCH_EXECUTED",
+    # 10 — native sideload: payload, как и у вектора 7, это библиотека (.dex в
+    # APK не добавляется), критерий тот же — конструктор .so под тегом
+    # ARCHINOME_NATIVE. Имя библиотеки инструмент узнаёт сам из loadLibrary()
+    # хостового dex (см. SIDELOAD_TARGET в note)
+    10: "NATIVE_PAYLOAD_CTOR",
+    11: "APP_PATCH_EXECUTED",
+    # 12..14 — внешний триггер: процесс поднимает платформа по команде с
+    # устройства (`am instrument` / `bmgr` / `am start-service`), launcher не
+    # участвует. Если триггер не выстрелил, вердикт — NA_TRIGGER_FAILED
+    12: "INSTRUMENTATION_PAYLOAD_EXECUTED",
+    13: "BACKUPAGENT_PAYLOAD_EXECUTED",
+    14: "ZYGOTE_PRELOAD_EXECUTED",
 }
 REINSTALL = {5}          # MY_PACKAGE_REPLACED срабатывает только при живой замене
 VECTORS = sorted(TAGS)
+# ONLY_VECTORS=9,10,11 — прогон подмножества (например, только новых векторов,
+# чтобы не переигрывать уже проверенные). Пусто = все известные векторы.
+if os.environ.get("ONLY_VECTORS"):
+    want = {v.strip() for v in os.environ["ONLY_VECTORS"].split(",") if v.strip()}
+    VECTORS = [v for v in VECTORS if str(v) in want]
 
 NOTE_MAX = 400
 HEADER = ["timestamp", "package", "vector", "verdict", "inject_ok", "install_ok",
@@ -78,6 +99,21 @@ def note_for(d, v=None):
         extra += "харнесс освободил порт 27042 от чужого frida-server; "
     if v == 7 and d.get("LEARN_HOST_LIB", "none") not in ("", "none"):
         extra += f"host-либа выбрана замером maps: {d['LEARN_HOST_LIB']}; "
+    # Векторы 9..14: у 9/11 важно, какой именно класс/метод пропатчен (иначе
+    # PAYLOAD_OK не отличить от «пропатчен не тот класс»), у 10 — какую
+    # библиотеку хост просит и не поставляет, у 13 — пришлось ли включать бэкап
+    # и переводить менеджер на локальный транспорт.
+    if v in (9, 11) and d.get("CODEPATCH_TARGETS", ""):
+        extra += (f"пропатчено методов {d.get('CODEPATCH_COUNT', '?')}: "
+                  f"{d['CODEPATCH_TARGETS']}; ")
+    if v == 10 and d.get("SIDELOAD_TARGET", ""):
+        extra += f"угнано имя {d['SIDELOAD_TARGET']}"
+        if d.get("SIDELOAD_CALLER", ""):
+            extra += f" (зовущий {d['SIDELOAD_CALLER']})"
+        extra += "; "
+    if v == 13 and d.get("TRIGGER_MSG_ENABLE", ""):
+        extra += ("bmgr: бэкап был выключен/транспорт не поднят — харнесс включил "
+                  "его и перевёл менеджер на локальный транспорт; ")
     return extra + reason(d)
 
 
@@ -98,6 +134,25 @@ def reason(d):
         return sanitize(d.get("NA_NOTE", "")) or (
             "хост не грузит ни одной своей lib/<abi>/*.so при холодном старте: "
             "нативному вектору не за что зацепиться")
+    # Неприменимость новых векторов: инжектор вернул SKIP (rc=3) и вышел, не
+    # создав APK. Это не INJECT_FAIL — хосту просто нечего патчить/подменять.
+    if verdict == "NA_NO_SERVICE_CLASS":
+        return sanitize(d.get("NA_NOTE", "")) or (
+            "в манифесте хоста нет собственных <service>: вектору 9 нечего патчить")
+    if verdict == "NA_NO_UNSHIPPED_LIB":
+        return sanitize(d.get("NA_NOTE", "")) or (
+            "хост не просит через loadLibrary ни одной библиотеки, которой у него "
+            "нет: вектору 10 нечего подменять")
+    if verdict == "NA_NO_CUSTOM_APP_CLASS":
+        return sanitize(d.get("NA_NOTE", "")) or (
+            "у хоста нет собственного Application-класса: вектору 11 нечего патчить")
+    # Внешний триггер (am instrument / bmgr / am start-service) не выстрелил:
+    # инжект и установка прошли, но процесс под нашу точку входа платформа не
+    # подняла. Сырой ответ триггера лежит в NA_NOTE (TRIGGER_MSG*).
+    if verdict == "NA_TRIGGER_FAILED":
+        return sanitize(d.get("NA_NOTE", "")) or (
+            "внешний триггер вектора не сработал: процесса под точку входа нет, "
+            "payload не получал шанса исполниться")
     if verdict == "HARNESS_TIMEOUT":
         return "прогон не уложился в таймаут (900 с)"
     return sanitize(d.get("INJECT_MSG", ""))

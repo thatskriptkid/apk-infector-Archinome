@@ -15,8 +15,50 @@
 #   INSTALL_MSG   последние строки вывода `adb install`
 #   SIGN_MSG      текст ошибки apksigner (при RESULT=SIGN_FAIL)
 #   PID, APP_ALIVE, PAYLOAD, PAYLOAD_LINES, CRASH, FATAL_NOTE
+#   SIDELOAD_TARGET, SIDELOAD_CALLER      вектор 10: какую библиотеку хост просит
+#                 и не поставляет (её имя занял payload) и в каком методе он её
+#                 просит — то, что инструмент узнал сам из dex хоста
+#   CODEPATCH_TARGETS, CODEPATCH_COUNT    векторы 9/11: какие именно методы хоста
+#                 переписаны (cls->method,cls->method,…)
+#   TRIGGER_OK, TRIGGER_RC, TRIGGER_MSG   внешний триггер векторов 12..14; у
+#                 вектора 13 к ним добавляются TRIGGER_MSG_ENABLE/
+#                 TRIGGER_MSG_TRANSPORT/TRIGGER_RC_RETRY/TRIGGER_MSG3 (повтор
+#                 после `bmgr enable` + локальный транспорт) и
+#                 TRIGGER_RC_RUN/TRIGGER_MSG2 (откат на `bmgr run`)
 #   RESULT        PAYLOAD_OK | NO_PAYLOAD | INJECT_FAIL | INSTALL_FAIL |
-#                 ALIGN_FAIL | SIGN_FAIL | SETUP_FAIL | NA_NO_INTERNET
+#                 ALIGN_FAIL | SIGN_FAIL | SETUP_FAIL | NA_NO_INTERNET |
+#                 NA_NO_LOADED_HOST_LIB | NA_NO_SERVICE_CLASS |
+#                 NA_NO_UNSHIPPED_LIB | NA_NO_CUSTOM_APP_CLASS |
+#                 NA_TRIGGER_FAILED
+#
+# Векторы 9..14 — та же обвязка, что у 1..8 (инжект → zipalign → apksigner →
+# install → триггер → критерий по logcat → живость), отличие только в триггере и
+# в том, что часть векторов структурно неприменима к хосту и отвечает кодом 3
+# (SKIP), а не сбоем:
+#   9  service code patch      критерий SERVICE_PATCH_EXECUTED; триггер — обычный
+#                              запуск; rc 3 -> NA_NO_SERVICE_CLASS (у хоста нет
+#                              собственных <service>, патчить нечего)
+#   10 native sideload         критерий NATIVE_PAYLOAD_CTOR; триггер — обычный
+#                              запуск; dex не добавляется, payload занимает имя
+#                              библиотеки, которую хост просит, но не поставляет;
+#                              rc 3 -> NA_NO_UNSHIPPED_LIB
+#   11 Application code patch  критерий APP_PATCH_EXECUTED; триггер — обычный
+#                              запуск; rc 3 -> NA_NO_CUSTOM_APP_CLASS
+#   12 <instrumentation>       критерий INSTRUMENTATION_PAYLOAD_EXECUTED; триггер
+#                              внешний: `am instrument -w <pkg>/<класс>` под
+#                              таймаутом; ошибка am -> NA_TRIGGER_FAILED
+#   13 android:backupAgent     критерий BACKUPAGENT_PAYLOAD_EXECUTED; триггер
+#                              внешний: `bmgr backup <pkg>` (подкоманды
+#                              `bmgr backupnow` в Android 17 нет), при «Backup is
+#                              not enabled»/«Transport not initialized» —
+#                              `bmgr enable true` + `bmgr transport
+#                              com.android.localtransport/.LocalTransport` и
+#                              повтор, затем откат на `bmgr run`; нет транспорта/
+#                              пакет не участник -> NA_TRIGGER_FAILED
+#   14 zygotePreload + сервис  критерий ZYGOTE_PRELOAD_EXECUTED; триггер внешний:
+#                              `am start-service -n <pkg>/<класс>` (сервис объявлен
+#                              exported=true специально); сервис не стартовал ->
+#                              NA_TRIGGER_FAILED
 #
 # Вектор 2 (frida) проверяется не по лог-тегу, а по интерфейсу самого gadget'а:
 # frida-ps -H 127.0.0.1:<порт gadget'а> должен показать ровно один процесс Gadget
@@ -77,6 +119,148 @@ export KS_PASS
 # обрезаем. Используется для note-полей (INJECT_MSG/INSTALL_MSG/SIGN_MSG).
 sanitize() {
   tr -d '\r' | tr '\n' ' ' | tr -s '[:space:]' ' ' | sed -e 's/^ //' -e 's/ $//' | cut -c1-400
+}
+
+# ---- внешние триггеры векторов 12..14 ---------------------------------------
+# Эти векторы не запускаются launcher'ом: процесс поднимает сама платформа по
+# команде с устройства (`am instrument`, `bmgr`, `am start-service`). Каждая
+# такая команда — под таймаутом: `am instrument -w` ждёт завершения
+# инструментации, а payload её не завершает, поэтому без таймаута команда висит
+# до 900-секундного лимита matrix.py и прогон выглядит как сбой харнесса.
+if command -v gtimeout >/dev/null; then TIMEOUT_BIN="gtimeout"
+elif command -v timeout >/dev/null; then TIMEOUT_BIN="timeout"
+else TIMEOUT_BIN=""; fi
+
+# tmo <секунды> <команда...>: код команды, 124 — если она не уложилась. Без
+# coreutils timeout работает портативный запасной путь (фон + опрос), иначе на
+# macOS зависший `am instrument` съел бы весь прогон.
+tmo() {
+  local secs="$1"; shift
+  if [ -n "$TIMEOUT_BIN" ]; then "$TIMEOUT_BIN" "$secs" "$@"; return $?; fi
+  "$@" & local cpid=$!
+  local i=0
+  while kill -0 "$cpid" 2>/dev/null; do
+    i=$((i + 1))
+    if [ "$i" -ge "$secs" ]; then
+      kill -9 "$cpid" 2>/dev/null
+      wait "$cpid" 2>/dev/null
+      return 124
+    fi
+    sleep 1
+  done
+  wait "$cpid"; return $?
+}
+
+# inj_line <KEY>: значение машиночитаемой строки KEY=... из вывода инжектора
+# (SIDELOAD_TARGET, CODEPATCH_TARGETS, ...). Инжектор печатает их с начала
+# строки, поэтому матч строгий — в отладочном тексте таких строк не бывает.
+inj_line() {
+  printf '%s\n' "$INJ" | sed -n "s/^$1=//p" | head -1
+}
+
+# Вектор 12: <instrumentation> из манифеста. Ошибка am (SecurityException,
+# «Unable to find instrumentation», пустой вывод) означает, что триггер не
+# выстрелил: это неприменимость вектора на хосте, а не отсутствие payload.
+# Различает их критерий по logcat — TRIGGER_OK только сужает вердикт.
+trigger_instrumentation() {
+  local out rc
+  out=$(tmo "${TRIGGER_TIMEOUT_INSTRUMENT:-45}" adb shell am instrument -w \
+        "$1/aaaaaaaaaaaa.ArchinomeInstrumentation" 2>&1); rc=$?
+  echo "TRIGGER_RC=$rc"
+  echo "TRIGGER_MSG=$(printf '%s' "$out" | sanitize)"
+  [ "$rc" -eq 0 ] || return 1
+  [ -n "$out" ] || return 1
+  if printf '%s' "$out" | grep -qaiE 'SecurityException|Unable to find instrumentation|INSTRUMENTATION_FAILED|does not exist|not found'; then
+    return 1
+  fi
+  return 0
+}
+
+# brief: тот же sanitize, но короче — сырые ответы bmgr/am в note должны быть
+# одной короткой строкой, а не вытеснять собой всю причину прогона.
+brief() { sanitize | cut -c1-200; }
+
+# bmgr_bad: ответ bmgr, означающий «бэкап не поедет» (пакет не участник, команда
+# не понята, ошибка, бэкап выключен, транспорт не поднят). Именно это делает
+# вектор неприменимым на хосте. «not enabled»/«transport not initialized» здесь
+# тоже плохие: после того как харнесс включил бэкап и перевёл менеджер на
+# локальный транспорт, такой ответ означает, что меры не помогли.
+bmgr_bad() {
+  printf '%s' "$1" | grep -qaiE 'error|unable|cannot|not eligible|not allowed|unknown package|no backup transport|transport not initialized|not enabled|not participating|does not support backup|does not exist|usage:'
+}
+
+# bmgr_needs_enable: bmgr отказал ровно из-за выключенного бэкапа или неподнятого
+# транспорта — есть что включить и что переключить, после чего повторить.
+bmgr_needs_enable() {
+  printf '%s' "$1" | grep -qaiE 'backup is not enabled|backup not enabled|transport not initialized'
+}
+
+# Вектор 13: android:backupAgent. Подкоманды `bmgr backupnow` в Android 17 нет:
+# сам bmgr печатает usage с `bmgr backup PACKAGE`. Порядок, проверенный на
+# устройстве: `bmgr backup <pkg>` -> если «Backup is not enabled»/«Transport not
+# initialized», `bmgr enable true` и перевод менеджера на локальный транспорт
+# (google-транспорт в лаборатории может быть не готов) -> повтор `bmgr backup`
+# -> при пустом/отказном ответе `bmgr run`. Сырой вывод каждого шага уходит в
+# note: без него вердикт не разобрать. Каждый шаг под таймаутом.
+trigger_backup() {
+  local out rc
+  # Локальный транспорт и включённый bmgr — сразу: google-транспорт в лаборатории
+  # не инициализирован, без перевода запрос до агента не доходит вовсе.
+  tmo "${TRIGGER_TIMEOUT_BMGR:-60}" adb shell bmgr enable true >/dev/null 2>&1
+  tmo "${TRIGGER_TIMEOUT_BMGR:-60}" adb shell bmgr transport com.android.localtransport/.LocalTransport >/dev/null 2>&1
+  out=$(tmo "${TRIGGER_TIMEOUT_BACKUP:-180}" adb shell bmgr backup "$1" 2>&1); rc=$?
+  echo "TRIGGER_RC=$rc"
+  echo "TRIGGER_MSG=$(printf '%s' "$out" | brief)"
+  if bmgr_needs_enable "$out"; then
+    local en tr
+    en=$(tmo "${TRIGGER_TIMEOUT_BMGR:-60}" adb shell bmgr enable true 2>&1)
+    echo "TRIGGER_MSG_ENABLE=$(printf '%s' "$en" | brief)"
+    tr=$(tmo "${TRIGGER_TIMEOUT_BMGR:-60}" adb shell bmgr transport com.android.localtransport/.LocalTransport 2>&1)
+    echo "TRIGGER_MSG_TRANSPORT=$(printf '%s' "$tr" | brief)"
+    out=$(tmo "${TRIGGER_TIMEOUT_BACKUP:-180}" adb shell bmgr backup "$1" 2>&1); rc=$?
+    echo "TRIGGER_RC_RETRY=$rc"
+    echo "TRIGGER_MSG3=$(printf '%s' "$out" | brief)"
+  fi
+  # `bmgr backup PACKAGE` часто отвечает молча: это запрос, а не результат.
+  # rc=0 без ошибки = запрос принят. Затем `bmgr run`: транспорт обрабатывает
+  # очередь по своему расписанию, а без принудительного прогона агент не
+  # поднимается вовсе (проверено на устройстве: с одним `bmgr backup` payload не
+  # исполнялся, с последующим `bmgr run` — исполнялся).
+  if [ "$rc" -eq 0 ] && ! bmgr_bad "$out"; then
+    tmo "${TRIGGER_TIMEOUT_BMGR:-60}" adb shell bmgr run >/dev/null 2>&1
+    return 0
+  fi
+  local run rrc
+  run=$(tmo "${TRIGGER_TIMEOUT_BMGR:-60}" adb shell bmgr run 2>&1); rrc=$?
+  echo "TRIGGER_RC_RUN=$rrc"
+  echo "TRIGGER_MSG2=$(printf '%s' "$run" | brief)"
+  # Молчаливый `bmgr run` (rc 0, ноль вывода) успехом не считается: этот вывод
+  # ничего не доказывает, а вердикт при отсутствии payload обязан быть честным —
+  # NA_TRIGGER_FAILED, а не NO_PAYLOAD. PAYLOAD_OK всё равно решает logcat.
+  if [ "$rrc" -eq 0 ] && [ -n "$run" ] && ! bmgr_bad "$run"; then return 0; fi
+  return 1
+}
+
+# Вектор 14: app-zygote-сервис (объявлен exported=true именно под этот триггер).
+# Пустой ответ `am start-service` — норма, в отличие от am instrument: о старте
+# судим по критерию в logcat, а не по тексту am.
+trigger_zygote_service() {
+  local out rc
+  # Изолированный сервис у фонового приложения система стартовать не даёт
+  # («app is in background uid null»): сначала поднимаем приложение на передний
+  # план тем же способом, что и лончерные векторы, иначе триггер проверял бы не
+  # вектор, а политику фоновых запусков.
+  adb shell monkey -p "$1" -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1
+  sleep "${ZYGOTE_PRELIFT_S:-3}"
+  out=$(tmo "${TRIGGER_TIMEOUT_SERVICE:-30}" adb shell am start-service -n \
+        "$1/aaaaaaaaaaaa.ArchinomeZygoteService" 2>&1); rc=$?
+  echo "TRIGGER_RC=$rc"
+  echo "TRIGGER_MSG=$(printf '%s' "$out" | sanitize)"
+  [ "$rc" -eq 0 ] || return 1
+  if printf '%s' "$out" | grep -qaiE 'Error|Exception|not found|does not exist|Unable'; then
+    return 1
+  fi
+  return 0
 }
 
 APK="$(cd "$(dirname "$1")" && pwd)/$(basename "$1")"; PKG="$2"; V="$3"
@@ -145,6 +329,38 @@ else
 fi
 echo "INJECT_RC=$INJECT_RC"
 
+# Код 3 — это SKIP, а не сбой: вектор структурно неприменим к этому хосту
+# (у 9 — в манифесте нет собственных <service>, у 10 — хост не просит ни одной
+# библиотеки, которой у него нет, у 11 — нет собственного Application-класса).
+# Такой прогон обязан быть отличим от INJECT_FAIL, поэтому вердикт выносится
+# здесь, до install/launch: выходного APK у SKIP нет by design.
+if [ "$INJECT_RC" = "3" ]; then
+  NAV=""
+  case "$V" in
+    9)  NAV=NA_NO_SERVICE_CLASS ;;
+    10) NAV=NA_NO_UNSHIPPED_LIB ;;
+    11) NAV=NA_NO_CUSTOM_APP_CLASS ;;
+  esac
+  # Векторы 9/11 сначала учатся по манифесту и только потом патчат тело метода в
+  # чужом dex. Если learn-шаг классы нашёл, а патч ещё не реализован, вердикт
+  # "нет сервисов/нет своего Application" был бы ложью: причина другая, и вызывающий
+  # её должен видеть.
+  case "$V" in
+    9|11) case "$INJ" in
+            *"code-item patch not implemented"*) NAV=NA_CODE_PATCH_PENDING ;;
+          esac ;;
+  esac
+  if [ -n "$NAV" ]; then
+    SKIP_NOTE="$(printf '%s' "$INJ" | sanitize)"
+    [ -z "$SKIP_NOTE" ] && SKIP_NOTE="инжектор вернул SKIP (rc=3) без текста причины"
+    echo "INJECT=skip"
+    echo "INJECT_MSG=$SKIP_NOTE"
+    echo "NA_NOTE=$SKIP_NOTE"
+    echo "RESULT=$NAV"
+    exit 0
+  fi
+fi
+
 if [ ! -s "$OUT" ]; then
   echo "INJECT=fail"
   # ВАЖНО: причина отказа уходит наружу целиком и без фильтра по ключевым
@@ -158,6 +374,15 @@ if [ ! -s "$OUT" ]; then
 fi
 echo "INJECT=ok"
 echo "INJECT_MSG=$(printf '%s' "$INJ" | grep -aE 'Skipped|native vector|Done!|error|Failed|OK' | sanitize)"
+# Провенанс новых векторов: строки, по которым видно, что именно сделал
+# инструмент (какую библиотеку угнал, какие методы переписал, сколько их).
+# В INJECT_MSG они не попадают — там фильтр по ключевым словам, — а для разбора
+# прогона нужны целиком, поэтому печатаются отдельными KEY=VALUE и уходят в note
+# (см. note_for в matrix.py).
+for K in SIDELOAD_TARGET SIDELOAD_CALLER CODEPATCH_TARGETS CODEPATCH_COUNT; do
+  KV="$(inj_line "$K")"
+  [ -n "$KV" ] && echo "$K=$KV"
+done
 
 # ---- align + sign ----------------------------------------------------------
 "$B/zipalign" -f -p 4 "$OUT" "$W/al.apk" >/dev/null 2>&1 || "$B/zipalign" -f 4 "$OUT" "$W/al.apk" >/dev/null 2>&1
@@ -215,8 +440,31 @@ if [ "$TAG" = "GADGET_CHECK" ]; then
 fi
 adb shell am force-stop "$PKG" >/dev/null 2>&1
 adb logcat -c >/dev/null 2>&1
-adb shell monkey -p "$PKG" -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1
-sleep 5
+# Векторы 12..14 поднимает не launcher, а системная команда: monkey здесь только
+# мешал бы (лишний процесс и лишние строки в logcat), поэтому у них свой триггер.
+# TRIGGER_OK читается вердиктом ниже: он различает «payload не исполнился» и
+# «триггер не выстрелил» — это разные вещи и разные вердикты.
+case "$V" in
+  12|13|14)
+    TRIGGER_OK=1
+    if [ "$V" = "12" ]; then trigger_instrumentation "$PKG" || TRIGGER_OK=0
+    elif [ "$V" = "13" ]; then trigger_backup "$PKG" || TRIGGER_OK=0
+    else trigger_zygote_service "$PKG" || TRIGGER_OK=0
+    fi
+    echo "TRIGGER_OK=$TRIGGER_OK"
+    ;;
+  *)
+    adb shell monkey -p "$PKG" -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1
+    ;;
+esac
+# Внешний триггер вектора 13 асинхронный: `bmgr backup` только просит транспорт,
+# агент поднимается в отдельном процессе уже после ответа — пяти секунд на это не
+# хватает, и честный OK вырождался в NO_PAYLOAD.
+if [ "$V" = "13" ]; then
+  sleep "${TRIGGER_SETTLE_BACKUP_S:-20}"
+else
+  sleep 5
+fi
 PID=$(adb shell pidof "$PKG" 2>/dev/null | tr -d '\r')
 echo "PID=${PID:-none}"
 if [ "$REINSTALL" = "1" ]; then
@@ -305,6 +553,15 @@ elif [ "$V" = "7" ] && [ "${LEARN_NA:-0}" = "1" ]; then
   # вердикт обязан быть отличим от NO_PAYLOAD.
   echo "NA_NOTE=вектор 7: при холодном старте хост не загрузил ни одной lib/<abi>/*.so (замер /proc/<pid>/maps на оригинале); NATIVE_MODE=${NMODE:-none}"
   echo "RESULT=NA_NO_LOADED_HOST_LIB"
+elif { [ "$V" = "12" ] || [ "$V" = "13" ] || [ "$V" = "14" ]; } && [ "${TRIGGER_OK:-1}" = "0" ]; then
+  # payload не появился и триггер не выстрелил. Это неприменимость вектора на
+  # хосте, а не сбой инжекта, поэтому NA_* — отличный от NO_PAYLOAD вердикт.
+  # Сырой вывод триггера идёт в note: без него причину с устройства не разобрать.
+  TRIG_NOTE="${TRIGGER_MSG:-нет вывода}"
+  [ -n "${TRIGGER_MSG3:-}" ] && TRIG_NOTE="$TRIG_NOTE; повтор после enable+transport: $TRIGGER_MSG3"
+  [ -n "${TRIGGER_MSG2:-}" ] && TRIG_NOTE="$TRIG_NOTE; bmgr run: $TRIGGER_MSG2"
+  echo "NA_NOTE=внешний триггер вектора $V не сработал: $TRIG_NOTE"
+  echo "RESULT=NA_TRIGGER_FAILED"
 else
   echo "RESULT=NO_PAYLOAD"
 fi

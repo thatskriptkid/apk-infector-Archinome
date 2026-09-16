@@ -10,6 +10,11 @@
 //	          and the payload carries the displaced dependency itself;
 //	append  - a new DT_NEEDED entry is added, leaving the existing graph
 //	          untouched (needs unused space in the dynamic and string tables).
+//	sideload - no host library is touched at all: the payload is dropped in as a
+//	          name the host asks for with System.loadLibrary() but never ships,
+//	          so the app's own (failing) lookup resolves to the payload and the
+//	          dynamic linker runs its constructor. Nothing in the manifest or in
+//	          the dex changes -- the learned name is the whole vector.
 package nativepatch
 
 import (
@@ -31,9 +36,10 @@ const Placeholder = "libarchinome_dependency_slot.so"
 type Mode string
 
 const (
-	ModeChain   Mode = "chain"
-	ModeReplace Mode = "replace"
-	ModeAppend  Mode = "append"
+	ModeChain    Mode = "chain"
+	ModeReplace  Mode = "replace"
+	ModeAppend   Mode = "append"
+	ModeSideload Mode = "sideload"
 )
 
 // Options configures Apply.
@@ -64,6 +70,12 @@ func (r Result) String() string {
 	case ModeChain:
 		return fmt.Sprintf("%s: %s now requires %s (displaced %s)",
 			r.ABI, r.HostLib, r.PayloadName, r.Displaced)
+	case ModeSideload:
+		// There is no host library: the point of the mode is that the name the
+		// app asks for is missing from the APK, so the app's own lookup is what
+		// loads the payload.
+		return fmt.Sprintf("%s: added %s (a library the app loads by name but does not ship; "+
+			"placeholder dependency re-pointed at %s)", r.ABI, r.PayloadName, r.Displaced)
 	default:
 		return fmt.Sprintf("%s: %s now also requires %s", r.ABI, r.HostLib, r.PayloadName)
 	}
@@ -75,8 +87,8 @@ func Apply(rootDir string, opt Options) ([]Result, error) {
 	if opt.Mode == "" {
 		opt.Mode = ModeChain
 	}
-	if opt.Mode != ModeChain && opt.Mode != ModeReplace && opt.Mode != ModeAppend {
-		return nil, fmt.Errorf("unknown native mode %q (want chain, replace or append)", opt.Mode)
+	if opt.Mode != ModeChain && opt.Mode != ModeReplace && opt.Mode != ModeAppend && opt.Mode != ModeSideload {
+		return nil, fmt.Errorf("unknown native mode %q (want chain, replace, append or sideload)", opt.Mode)
 	}
 	abis, err := abiDirs(rootDir, opt.ABI)
 	if err != nil {
@@ -94,7 +106,12 @@ func Apply(rootDir string, opt Options) ([]Result, error) {
 			skipped = append(skipped, abi)
 			continue
 		}
-		res, err := applyABI(libDir, abi, payload, opt)
+		var res *Result
+		if opt.Mode == ModeSideload {
+			res, err = applySideload(libDir, abi, payload, opt)
+		} else {
+			res, err = applyABI(libDir, abi, payload, opt)
+		}
 		if err != nil {
 			return results, fmt.Errorf("%s: %w", abi, err)
 		}
@@ -107,6 +124,36 @@ func Apply(rootDir string, opt Options) ([]Result, error) {
 		return nil, fmt.Errorf("no native libraries found below %s", rootDir)
 	}
 	return results, nil
+}
+
+// applySideload drops the payload in under a name the host resolves itself. The
+// existing library graph is not touched at all -- the whole vector is the name
+// the app asks for and never finds.
+func applySideload(libDir, abi, payloadPath string, opt Options) (*Result, error) {
+	name := filepath.Base(opt.OurName)
+	if name == "" || name == "." {
+		return nil, fmt.Errorf("sideload mode needs OurName: the library name the host asks for")
+	}
+	if !strings.HasSuffix(name, ".so") {
+		return nil, fmt.Errorf("sideload name %q is not a .so name", name)
+	}
+	dst := filepath.Join(libDir, name)
+	if _, err := os.Stat(dst); err == nil {
+		// A candidate stops being a candidate the moment the host ships it:
+		// the payload would lose to the library the app already has.
+		return nil, fmt.Errorf("%s already ships in the APK; that name cannot be sideloaded", name)
+	}
+	// Nothing displaces a dependency for the payload in this mode, so its
+	// build-time placeholder has to point at a library that is loaded anyway.
+	target := "libc.so"
+	if err := writePayload(payloadPath, dst, target); err != nil {
+		return nil, err
+	}
+	res := &Result{ABI: abi, Mode: ModeSideload, PayloadName: name, Displaced: target}
+	if st, err := os.Stat(dst); err == nil {
+		res.Bytes = int(st.Size())
+	}
+	return res, nil
 }
 
 func applyABI(libDir, abi, payloadPath string, opt Options) (*Result, error) {

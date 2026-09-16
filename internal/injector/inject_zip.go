@@ -27,15 +27,24 @@ import (
 func Inject(inputAPK string, outputAPK string) {
 	plan := NewRepackPlan()
 
-	if utils.Payload_option == int(utils.Native_payload) {
+	if utils.Payload_option == int(utils.Native_payload) ||
+		utils.Payload_option == int(utils.Native_sideload_payload) {
 		if err := planNative(inputAPK, &plan); err != nil {
 			// A host without lib/<abi>/ is a legitimate "not applicable", not a
 			// crash: report it plainly and leave no output behind.
-			fmt.Printf("\t--SKIP: native vector not applicable: %v\n", err)
+			fmt.Printf("	--SKIP: native vector not applicable: %v\n", err)
 			os.Remove(outputAPK)
 			os.Exit(3)
 		}
 		writePlan(inputAPK, outputAPK, plan)
+		return
+	}
+
+	if utils.Payload_option == int(utils.Service_payload) ||
+		utils.Payload_option == int(utils.CodePatchApp_payload) {
+		// These two never touch the manifest, so they cannot go through the
+		// generic path below (which always replaces AndroidManifest.xml).
+		planCodePatch(inputAPK, outputAPK)
 		return
 	}
 
@@ -51,7 +60,8 @@ func Inject(inputAPK string, outputAPK string) {
 	switch utils.Payload_option {
 	case int(utils.Provider_payload), int(utils.Trampoline_payload),
 		int(utils.Receiver_payload), int(utils.AppComponentFactory_payload),
-		int(utils.Assets_payload):
+		int(utils.Assets_payload), int(utils.Instrumentation_payload),
+		int(utils.BackupAgent_payload), int(utils.ZygotePreload_payload):
 		src := payloadStubPath()
 		plan.Add = append(plan.Add, Entry{
 			Name:   dexName(next),
@@ -160,13 +170,30 @@ func planNative(inputAPK string, plan *RepackPlan) error {
 		original[n] = data
 	}
 
-	results, err := nativepatch.Apply(tmp, nativepatch.Options{
+	opt := nativepatch.Options{
 		ABI:     os.Getenv("ARCHINOME_NATIVE_ABI"),
 		HostLib: os.Getenv("ARCHINOME_NATIVE_HOST"),
 		Mode:    nativepatch.Mode(os.Getenv("ARCHINOME_NATIVE_MODE")),
 		Payload: os.Getenv("ARCHINOME_NATIVE_LIB"),
 		OurName: os.Getenv("ARCHINOME_NATIVE_NAME"),
-	})
+	}
+
+	if utils.Payload_option == int(utils.Native_sideload_payload) {
+		// This vector is defined by the name the host asks for and never ships,
+		// so the name cannot be a caller constant: it is learned from the app's
+		// own loadLibrary() call sites. ARCHINOME_NATIVE_NAME overrides it.
+		opt.Mode = nativepatch.ModeSideload
+		if opt.OurName == "" {
+			learned, err := learnSideloadName(inputAPK, names)
+			if err != nil {
+				return err
+			}
+			opt.OurName = learned
+		}
+		fmt.Printf("	--sideload: the payload takes the name %s\n", opt.OurName)
+	}
+
+	results, err := nativepatch.Apply(tmp, opt)
 	if err != nil {
 		return err
 	}
@@ -213,6 +240,12 @@ func payloadStubPath() string {
 		return payload_appfactory_name
 	case int(utils.Assets_payload):
 		return payload_assets_name
+	case int(utils.Instrumentation_payload):
+		return payload_instrumentation_name
+	case int(utils.BackupAgent_payload):
+		return payload_backupagent_name
+	case int(utils.ZygotePreload_payload):
+		return payload_zygote_name
 	default:
 		return payload_receiver_name
 	}

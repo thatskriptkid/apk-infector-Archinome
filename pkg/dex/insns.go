@@ -111,5 +111,17 @@ var insnTable = func() [256]insnFormat {
 
 // insnWidth returns the size of the instruction at insns[pc] in code units.
 func insnWidth(unit uint16) int {
-	return insnTable[unit>>8].width
+	return insnTable[insnOpcode(unit)].width
+}
+
+// insnOpcode extracts the opcode of a code unit.
+//
+// A Dalvik instruction starts at the low byte of its first code unit: the
+// opcode is code[0], and the high byte (when the format uses it) carries
+// registers -- for 35c it is A(15:12)|G(11:8)|opcode(7:0). The insns array in
+// the model holds the on-disk code units, so the opcode is unit&0xff. Reading
+// unit>>8 instead picks up the register field and desynchronises every walk of
+// the instruction stream (ART: `opcode = inst & 0xff`).
+func insnOpcode(unit uint16) uint8 {
+	return uint8(unit & 0xff)
 }

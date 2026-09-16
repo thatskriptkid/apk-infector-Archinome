@@ -356,21 +356,29 @@ func (p *parser) stringAt(off uint32) (string, error) {
 }
 
 // typeList reads a type_list; a zero offset means "no list".
+//
+// A type_list is a uint32 count followed by the entries themselves, and an
+// entry is a *ushort* type_idx (dex-format.md, "type_item format"), not a
+// uint32: reading them as 4-byte values swallows the two bytes that follow the
+// last entry, which for every proto with parameters lands in the next data
+// item (typically string_data) and looks like a type index out of range. The
+// old reader therefore rejected every real dex that declared a method with
+// arguments.
 func (p *parser) typeList(off uint32) ([]uint32, error) {
 	if off == 0 {
 		return nil, nil
 	}
 	size := p.u32(int(off))
+	if size == 0 {
+		return nil, nil
+	}
 	out := make([]uint32, 0, size)
 	for i := uint32(0); i < size; i++ {
-		v, err := rdU32(p.d, int(off)+4+int(i)*4)
+		v, err := rdU16(p.d, int(off)+4+int(i)*2)
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, v)
-	}
-	if len(out) == 0 {
-		return nil, nil
+		out = append(out, uint32(v))
 	}
 	return out, nil
 }
@@ -560,7 +568,7 @@ func (p *parser) codeItem(off uint32) (*CodeItem, error) {
 func (p *parser) checkInsns(off int, size uint32) error {
 	for i := uint32(0); i < size; {
 		unit := p.u16(off + int(i)*2)
-		f := insnTable[unit>>8]
+		f := insnTable[insnOpcode(unit)]
 		if f.kind == ikCallSite || f.kind == ikMethodHandle {
 			return unsupported("invoke-custom/const-method-handle instruction")
 		}
@@ -634,11 +642,16 @@ func (p *parser) debugInfo(off uint32) (*DebugInfo, error) {
 		dbg.Params = append(dbg.Params, v)
 	}
 	for {
-		op, next, err := rdULEB(p.d, pos)
-		if err != nil {
-			return nil, err
+		// The debug opcode is a single byte, not a uleb128: a uleb reader
+		// swallows a second byte for every special opcode (>= 0x0a with the
+		// high bit set) and the rest of the program is then read from the
+		// wrong place.
+		if pos >= len(p.d) {
+			return nil, fmt.Errorf("dex: debug_info at 0x%x truncated", off)
 		}
-		pos = next
+		op := uint32(p.d[pos])
+		pos++
+		var err error
 		e := DbgOp{Op: op}
 		read := func(k dbgKind) error {
 			var (

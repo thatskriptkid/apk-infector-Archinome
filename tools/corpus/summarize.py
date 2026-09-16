@@ -6,21 +6,33 @@
 
 Печатает markdown-таблицу вердиктов по векторам и пер-хостовую матрицу
 (`+` PAYLOAD_OK, `-` NO_PAYLOAD, `s` INJECT_FAIL, `n` NA_NO_INTERNET,
-`L` NA_NO_LOADED_HOST_LIB, `!` INSTALL_FAIL, `?` строки нет).
+`L` NA_NO_LOADED_HOST_LIB, `S` NA_NO_SERVICE_CLASS, `N` NA_NO_UNSHIPPED_LIB,
+`A` NA_NO_CUSTOM_APP_CLASS, `t` NA_TRIGGER_FAILED, `!` INSTALL_FAIL,
+`?` строки нет).
 """
 import collections
 import sys
 
 ORDER = ["PAYLOAD_OK", "NO_PAYLOAD", "INJECT_FAIL", "NA_NO_INTERNET",
-         "NA_NO_LOADED_HOST_LIB", "INSTALL_FAIL"]
+         "NA_NO_LOADED_HOST_LIB", "NA_NO_SERVICE_CLASS", "NA_NO_UNSHIPPED_LIB",
+         "NA_NO_CUSTOM_APP_CLASS", "NA_TRIGGER_FAILED", "INSTALL_FAIL"]
 CODE = {
     "PAYLOAD_OK": "+",
     "NO_PAYLOAD": "-",
     "INJECT_FAIL": "s",
     "NA_NO_INTERNET": "n",
     "NA_NO_LOADED_HOST_LIB": "L",
+    "NA_NO_SERVICE_CLASS": "S",
+    "NA_NO_UNSHIPPED_LIB": "N",
+    "NA_NO_CUSTOM_APP_CLASS": "A",
+    "NA_TRIGGER_FAILED": "t",
     "INSTALL_FAIL": "!",
 }
+# Векторы 1..14: 1..8 — старые, 9..14 — добавленные (service code patch,
+# native sideload, Application code patch, instrumentation, backupAgent,
+# zygotePreload). Диапазон держим здесь, чтобы пер-хостовая матрица не потеряла
+# новые колонки, когда matrix.tsv начнёт их содержать.
+VECTORS = range(1, 15)
 
 
 def main(path):
@@ -38,10 +50,10 @@ def main(path):
         cells = [str(per[vec][v]) if per[vec][v] else "0" for v in ORDER]
         print(f"| {vec} | " + " | ".join(cells) + " |")
     print()
-    print("| хост | 1..8 |")
+    print("| хост | 1..14 |")
     print("|---|---|")
     for pkg in sorted(hosts):
-        line = "".join(CODE.get(hosts[pkg].get(v, ""), "?") for v in range(1, 9))
+        line = "".join(CODE.get(hosts[pkg].get(v, ""), "?") for v in VECTORS)
         print(f"| {pkg} | `{line}` |")
     print()
     total = collections.Counter(r[3] for r in rows)

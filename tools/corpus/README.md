@@ -124,6 +124,34 @@ bash harness.sh apk/com.foxdebug.acode.apk com.foxdebug.acode 5 RECEIVER_PAYLOAD
 | 6 | appfactory | `APPFACTORY_PAYLOAD_EXECUTED` |
 | 7 | native | `NATIVE_PAYLOAD_CTOR` |
 | 8 | assets | `ASSET_PAYLOAD_EXECUTED` |
+| 9 | service code patch | **не реализовано**: learn-шаг печатает цели (`CODEPATCH_TARGETS`), `code_item`-патч в разработке → `NA_CODE_PATCH_PENDING` |
+| 10 | native sideload | `NATIVE_PAYLOAD_CTOR` — обычный запуск (хост сам зовёт `loadLibrary`); dex не добавляется |
+| 11 | Application code patch | **не реализовано**, как и 9 → `NA_CODE_PATCH_PENDING` |
+| 12 | `<instrumentation>` | `INSTRUMENTATION_PAYLOAD_EXECUTED` — триггер внешний: `am instrument -w <pkg>/aaaaaaaaaaaa.ArchinomeInstrumentation` |
+| 13 | `android:backupAgent` | `BACKUPAGENT_PAYLOAD_EXECUTED` — триггер внешний: `bmgr backup <pkg>` (подкоманды `bmgr backupnow` в Android 17 нет), при `Backup is not enabled`/`Transport not initialized` — `bmgr enable true` + `bmgr transport com.android.localtransport/.LocalTransport` и повтор, затем откат на `bmgr run`. Механизм подтверждён на устройстве отдельным триггером (`bash smoke_new.sh <pkg> 13`), но через сам харнесс тот же хост даёт ложный `NO_PAYLOAD` — открытый дефект измерения (не вектора) |
+| 14 | `zygotePreloadName` + isolated service | `ZYGOTE_PRELOAD_EXECUTED` — триггер внешний: `am start-service -n <pkg>/aaaaaaaaaaaa.ArchinomeZygoteService` |
+
+Векторы 9 и 11 не трогают манифест: патчится тело метода (`<clinit>`, иначе
+`<init>`) классов, которые хост и так объявил (`<service android:name>` / класс из
+`<application android:name>`), поэтому статического следа в манифесте нет. Вектор 10
+вообще не добавляет dex — payload занимает имя библиотеки, которую хост запрашивает
+через `System.loadLibrary`, но сам не поставляет. Векторы 12–14 активируются только
+внешним триггером (см. таблицу); обычный запуск приложения их не включает.
+
+Инжектор печатает по новым векторам: `SIDELOAD_TARGET=<lib>` и
+`SIDELOAD_CALLER=<класс>-><метод>` (10), `CODEPATCH_TARGETS=<...>` и
+`CODEPATCH_COUNT=<n>` (9/11). Вектор структурно неприменим к хосту там, где
+патчить нечего (нет сервисов, нет собственного Application-класса, нет
+непоставленной библиотеки) — это `rc 3` (SKIP) инжектора и вердикт `NA_*`, а не
+`NO_PAYLOAD`.
+
+Каждый шаг внешнего триггера идёт под таймаутом
+(`TRIGGER_TIMEOUT_INSTRUMENT`/`TRIGGER_TIMEOUT_BACKUP`/`TRIGGER_TIMEOUT_BMGR`/
+`TRIGGER_TIMEOUT_SERVICE`, секунды; без coreutils `timeout` работает портативный
+запасной путь фон+опрос) — иначе зависший `am instrument -w` съел бы весь прогон
+(matrix.py убивает прогон на 900 с и пишет `HARNESS_TIMEOUT`). Сырой ответ
+триггера (первые 200 символов, одной строкой) попадает в `note`; `TRIGGER_OK=0`
+при отсутствии payload даёт `NA_TRIGGER_FAILED`, а не `NO_PAYLOAD`.
 
 Вектор 7 перебирает нативные режимы `chain → replace → append` и возвращает
 `NATIVE_MODE=<режим>|none`; причина отказа при этом собирается по **всем**
@@ -150,7 +178,9 @@ export KS_PASS='...'
 python3 matrix.py
 ```
 
-Корпус в `targets.tsv` — 50 приложений × 8 векторов = 400 прогонов.
+Корпус в `targets.tsv` — 50 приложений; `matrix.py` перебирает все векторы
+инжектора (1–14), по одному прогону на пару `(package, vector)`. Числа прогонов
+смотрите в `matrix.tsv`.
 **Возобновляемо**: пара
 `(package, vector)`, уже присутствующая в `matrix.tsv`, пропускается — после
 обрыва просто запустите `matrix.py` снова. Прогресс виден в stdout и в
@@ -169,7 +199,7 @@ TSV, первая строка — заголовок, по строке на п
 | --- | --- | --- |
 | 1 | `timestamp` | время окончания прогона, ISO |
 | 2 | `package` | пакет |
-| 3 | `vector` | номер вектора (1–8) |
+| 3 | `vector` | номер вектора (1–14) |
 | 4 | `verdict` | вердикт (см. ниже) |
 | 5 | `inject_ok` | `INJECT=ok/fail` от harness |
 | 6 | `install_ok` | `INSTALL=ok/fail` |
@@ -211,6 +241,11 @@ TSV, первая строка — заголовок, по строке на п
 | `NA_PORT_BUSY` | порт gadget'а (`GADGET_PORT`, по умолчанию 27042) занят чужим слушателем и освободить его не удалось. |
 | `NA_NO_INTERNET` | хост не заявил `android.permission.INTERNET`, а listen-режим gadget'а (вектор 2) без него не поднимается. |
 | `NA_NO_LOADED_HOST_LIB` | замер `maps` на оригинале не нашёл ни одной загруженной `lib/<abi>/*.so` — вектору 7 не за что цепляться при холодном старте. |
+| `NA_NO_SERVICE_CLASS` | у хоста нет собственных объявленных `<service>` — вектору 9 нечего патчить. |
+| `NA_NO_UNSHIPPED_LIB` | хост не зовёт `loadLibrary` ни для одной библиотеки, которой нет в APK, — вектору 10 не за что зацепиться. |
+| `NA_NO_CUSTOM_APP_CLASS` | у хоста нет собственного Application-класса (стоит платформенный `android.app.Application`) — вектору 11 нечего патчить. |
+| `NA_CODE_PATCH_PENDING` | вектор 9/11 нашёл цели по манифесту, но правка `code_item` в чужом dex ещё не реализована — хост пропущен не из-за неприменимости. |
+| `NA_TRIGGER_FAILED` | внешний триггер векторов 12–14 не отработал: `am` вернул ошибку, сервис не стартовал, у `bmgr` нет транспорта или пакет не участвует в бэкапе. |
 | `ALIGN_FAIL` / `SIGN_FAIL` | не удалось выровнять или подписать APK (для `SIGN_FAIL` причина в `note`). |
 | `SETUP_FAIL` | не задан обязательный `KS_PASS` и т.п. |
 | `HARNESS_ERROR` | `harness.sh` не напечатал `RESULT` (например, скрипта нет на месте) — вывод harness целиком уходит в `note`. |
