@@ -41,7 +41,10 @@ func main() {
 
 	log.SetOutput(logFile)
 
-	if os.Args[1] == "-h" {
+	// Запуск без аргументов — это не ошибка вызова, а просьба о справке: раньше
+	// `os.Args[1]` индексировался до проверки длины и голый `archinome` падал
+	// паникой вместо help_str.
+	if len(os.Args) < 2 || os.Args[1] == "-h" || os.Args[1] == "--help" {
 		fmt.Println(help_str)
 		return
 	}

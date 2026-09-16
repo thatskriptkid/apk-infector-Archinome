@@ -166,8 +166,9 @@ trigger_instrumentation() {
   local out rc
   out=$(tmo "${TRIGGER_TIMEOUT_INSTRUMENT:-45}" adb shell am instrument -w \
         "$1/aaaaaaaaaaaa.ArchinomeInstrumentation" 2>&1); rc=$?
-  echo "TRIGGER_RC=$rc"
-  echo "TRIGGER_MSG=$(printf '%s' "$out" | sanitize)"
+  TRIGGER_RC="$rc"; TRIGGER_MSG="$(printf '%s' "$out" | sanitize)"
+  echo "TRIGGER_RC=$TRIGGER_RC"
+  echo "TRIGGER_MSG=$TRIGGER_MSG"
   [ "$rc" -eq 0 ] || return 1
   [ -n "$out" ] || return 1
   if printf '%s' "$out" | grep -qaiE 'SecurityException|Unable to find instrumentation|INSTRUMENTATION_FAILED|does not exist|not found'; then
@@ -209,17 +210,21 @@ trigger_backup() {
   tmo "${TRIGGER_TIMEOUT_BMGR:-60}" adb shell bmgr enable true >/dev/null 2>&1
   tmo "${TRIGGER_TIMEOUT_BMGR:-60}" adb shell bmgr transport com.android.localtransport/.LocalTransport >/dev/null 2>&1
   out=$(tmo "${TRIGGER_TIMEOUT_BACKUP:-180}" adb shell bmgr backup "$1" 2>&1); rc=$?
-  echo "TRIGGER_RC=$rc"
-  echo "TRIGGER_MSG=$(printf '%s' "$out" | brief)"
+  TRIGGER_RC="$rc"; TRIGGER_MSG="$(printf '%s' "$out" | brief)"
+  echo "TRIGGER_RC=$TRIGGER_RC"
+  echo "TRIGGER_MSG=$TRIGGER_MSG"
   if bmgr_needs_enable "$out"; then
     local en tr
     en=$(tmo "${TRIGGER_TIMEOUT_BMGR:-60}" adb shell bmgr enable true 2>&1)
-    echo "TRIGGER_MSG_ENABLE=$(printf '%s' "$en" | brief)"
+    TRIGGER_MSG_ENABLE="$(printf '%s' "$en" | brief)"
+    echo "TRIGGER_MSG_ENABLE=$TRIGGER_MSG_ENABLE"
     tr=$(tmo "${TRIGGER_TIMEOUT_BMGR:-60}" adb shell bmgr transport com.android.localtransport/.LocalTransport 2>&1)
-    echo "TRIGGER_MSG_TRANSPORT=$(printf '%s' "$tr" | brief)"
+    TRIGGER_MSG_TRANSPORT="$(printf '%s' "$tr" | brief)"
+    echo "TRIGGER_MSG_TRANSPORT=$TRIGGER_MSG_TRANSPORT"
     out=$(tmo "${TRIGGER_TIMEOUT_BACKUP:-180}" adb shell bmgr backup "$1" 2>&1); rc=$?
-    echo "TRIGGER_RC_RETRY=$rc"
-    echo "TRIGGER_MSG3=$(printf '%s' "$out" | brief)"
+    TRIGGER_RC_RETRY="$rc"; TRIGGER_MSG3="$(printf '%s' "$out" | brief)"
+    echo "TRIGGER_RC_RETRY=$TRIGGER_RC_RETRY"
+    echo "TRIGGER_MSG3=$TRIGGER_MSG3"
   fi
   # `bmgr backup PACKAGE` часто отвечает молча: это запрос, а не результат.
   # rc=0 без ошибки = запрос принят. Затем `bmgr run`: транспорт обрабатывает
@@ -232,8 +237,9 @@ trigger_backup() {
   fi
   local run rrc
   run=$(tmo "${TRIGGER_TIMEOUT_BMGR:-60}" adb shell bmgr run 2>&1); rrc=$?
-  echo "TRIGGER_RC_RUN=$rrc"
-  echo "TRIGGER_MSG2=$(printf '%s' "$run" | brief)"
+  TRIGGER_RC_RUN="$rrc"; TRIGGER_MSG2="$(printf '%s' "$run" | brief)"
+  echo "TRIGGER_RC_RUN=$TRIGGER_RC_RUN"
+  echo "TRIGGER_MSG2=$TRIGGER_MSG2"
   # Молчаливый `bmgr run` (rc 0, ноль вывода) успехом не считается: этот вывод
   # ничего не доказывает, а вердикт при отсутствии payload обязан быть честным —
   # NA_TRIGGER_FAILED, а не NO_PAYLOAD. PAYLOAD_OK всё равно решает logcat.
@@ -254,8 +260,9 @@ trigger_zygote_service() {
   sleep "${ZYGOTE_PRELIFT_S:-3}"
   out=$(tmo "${TRIGGER_TIMEOUT_SERVICE:-30}" adb shell am start-service -n \
         "$1/aaaaaaaaaaaa.ArchinomeZygoteService" 2>&1); rc=$?
-  echo "TRIGGER_RC=$rc"
-  echo "TRIGGER_MSG=$(printf '%s' "$out" | sanitize)"
+  TRIGGER_RC="$rc"; TRIGGER_MSG="$(printf '%s' "$out" | sanitize)"
+  echo "TRIGGER_RC=$TRIGGER_RC"
+  echo "TRIGGER_MSG=$TRIGGER_MSG"
   [ "$rc" -eq 0 ] || return 1
   if printf '%s' "$out" | grep -qaiE 'Error|Exception|not found|does not exist|Unable'; then
     return 1
@@ -465,6 +472,14 @@ if [ "$V" = "13" ]; then
 else
   sleep 5
 fi
+# Внешний триггер (12..14) поднимает процесс сама платформа, и под нагрузкой это
+# медленнее, чем окно чтения logcat: один и тот же хост давал PAYLOAD_OK при
+# отдельном прогоне и NA_TRIGGER_FAILED в матрице. Критерий НЕ меняется (строка
+# payload в logcat) — расширяется только окно: если тега в первом чтении нет,
+# ждём и читаем logcat повторно, приписывая второе чтение к первому. Тег в первом
+# чтении есть (или уже найден payload) — повтор не нужен.
+EXTRA_SETTLE=""
+case "$V" in 12|13|14) EXTRA_SETTLE="${EXTERNAL_RETRY_SETTLE_S:-30}";; esac
 PID=$(adb shell pidof "$PKG" 2>/dev/null | tr -d '\r')
 echo "PID=${PID:-none}"
 if [ "$REINSTALL" = "1" ]; then
@@ -474,6 +489,13 @@ if [ "$REINSTALL" = "1" ]; then
   PID=$(adb shell pidof "$PKG" 2>/dev/null | tr -d '\r')
 fi
 LOG=$(adb logcat -d 2>/dev/null)
+if [ -n "$EXTRA_SETTLE" ] && ! printf '%s' "$LOG" | grep -qa "$TAG"; then
+  sleep "$EXTRA_SETTLE"
+  LOG2=$(adb logcat -d 2>/dev/null)
+  echo "EXTERNAL_RETRY_SETTLE=${EXTRA_SETTLE}s"
+  LOG="$LOG
+$LOG2"
+fi
 
 # ---- vector 2 (frida gadget): his own interface, not a log tag --------------
 # The injected wrapper only calls System.loadLibrary("frida-gadget"); nothing

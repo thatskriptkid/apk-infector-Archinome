@@ -228,11 +228,15 @@ func rdMutf8(b []byte, off int) (string, bool) {
 		case c < 0x80:
 			sb.WriteByte(c)
 			i++
-		case c&0xe0 == 0xc0 && i+1 < len(raw):
-			sb.WriteByte((c&0x1f)<<6 | raw[i+1]&0x3f)
+		case c&0xe0 == 0xc0 && i+1 < len(raw) && raw[i+1]&0xc0 == 0x80:
+			// Приведение к rune обязательно: в uint8 сдвиг на 6 теряет старшие
+			// биты (0x1f<<6 = 0x7c0 не влезает в байт), и строка декодируется
+			// молча неверно. На ASCII-именах это незаметно, поэтому баг жил.
+			// Продолжение обязано быть 10xxxxxx, иначе байт отдаётся как есть.
+			sb.WriteRune(rune(c&0x1f)<<6 | rune(raw[i+1]&0x3f))
 			i += 2
-		case c&0xf0 == 0xe0 && i+2 < len(raw):
-			sb.WriteRune(rune((c&0x0f)<<12 | (raw[i+1]&0x3f)<<6 | raw[i+2]&0x3f))
+		case c&0xf0 == 0xe0 && i+2 < len(raw) && raw[i+1]&0xc0 == 0x80 && raw[i+2]&0xc0 == 0x80:
+			sb.WriteRune(rune(c&0x0f)<<12 | rune(raw[i+1]&0x3f)<<6 | rune(raw[i+2]&0x3f))
 			i += 3
 		default:
 			sb.WriteByte(c)
