@@ -501,6 +501,34 @@ TRIGGER_RC=255  TRIGGER_MSG=Starting service: Intent { cmp=…/ArchinomeZygoteSe
 
 ---
 
+## 10. Векторы 9 и 11: правка `code_item`, прогон 5 (100 ячеек)
+
+Векторы 9 (service code patch) и 11 (Application code patch) доведены до рабочего состояния: инжектор добавляет в хостовый dex id'ы payload-класса и вставляет `invoke-static` в НАЧАЛО целевого метода (`<clinit>` в приоритете, иначе `<init>`), сдвигая адреса try-блоков и обработчиков на 3 code unit'а. Манифест остаётся байт-в-байт как у разработчика, новых компонентов нет — payload-класс приходит отдельным `classesN.dex`.
+
+Прежде чем гонять векторы, верность энкодера измерена по всему корпусу (`docs/dex-roundtrip-fidelity.md`): 50 хостов, 79 dex'ов, ~2.1 млн строк и ~74 млн инструкций, 0 расхождений. Замер нашёл пять дефектов (порядок операнда 35c, пересортировка `class_defs`, чтение MUTF-8, правило сортировки строк, знаковое расширение `char`), каждый из которых до правки делал прогон бессмысленным.
+
+| # | вектор | `PAYLOAD_OK` | `NO_PAYLOAD` | неприменимо | применим / сработал |
+|---|---|---|---|---|---|
+| 9 | service code patch | 13 | 17 | 20 `NA_NO_SERVICE_CLASS` | 30 / 13 (43%) |
+| 11 | Application code patch | 26 | 0 | 23 `NA_NO_CUSTOM_APP_CLASS` + 1 `INSTALL_FAIL` | 27 / 26 (96%) |
+
+Единственный `INSTALL_FAIL` — `com.streetwriters.notesnook` (`INSTALL_FAILED_NO_MATCHING_ABIS`, не ставится и в оригинале) — артефакт корпуса, как и в прогонах 1-4.
+
+### 10.1 Вектор 11: срабатывает на всех применимых хостах
+
+26 `PAYLOAD_OK` из 27 ячеек, дошедших до установки; отказов по существу нет. Живая проверка на `com.machiav3lli.fdroid`: инжектор правит `Lcom/machiav3lli/fdroid/NeoApp;-><clinit>`, `dexdump -d` показывает первой инструкцией метода `invoke-static {}, Laaaaaaaaaaaa/AppPatch;.run:()V`, `dexdump` верифицирует файл, на устройстве в logcat `I/ARCHINOME: APP_PATCH_EXECUTED`.
+
+### 10.2 Вектор 9: 13 из 30 — упор в загрузку класса сервиса
+
+17 `NO_PAYLOAD` — хосты, у которых патченные классы сервисов при обычном запуске не загружаются. Разбор целей: срабатывания приходятся на инфраструктурные сервисы, которые хост поднимает сам при старте (`androidx/work/...SystemJobService` — 5, `androidx/room/MultiInstanceInvalidationService` — 5, `SystemForegroundService` — 4, `SystemAlarmService` — 3), а отказы — на сервисы, грузящиеся только при определённом сценарии (`FlorisImeService`, `InCallService`, tile- и sync-сервисы XBMC/Kore, Dolphin). Вывод: у вектора 9, как и у вектора 10, два уровня применимости — «класс сервиса есть в dex» и «хост реально грузит этот класс при запуске»; инжектор проверяет только первое. Ранжирование целей по признаку «грузится при старте» (аналог `learn-host-lib.sh` у нативного вектора) осталось за рамками прогона: 43% — это оценка снизу, а не предел вектора.
+
+### 10.3 Что осталось за рамками
+
+- Вектор 13 (`android:backupAgent`) — механизм подтверждён, измерение в харнессе дефектно, из таблицы исключён (§9.3).
+- Вектор 10 (sideload) — 0 срабатываний из 2 фактически прогнанных хостов (§9.5).
+- Цели вектора 9 не ранжируются по признаку «загружается при старте» (§10.2).
+- `NA_NO_SERVICE_CLASS` / `NA_NO_CUSTOM_APP_CLASS` — честная неприменимость: у хоста нет собственных `<service>` или своего класса `Application`.
+
 ## Воспроизведение
 
 ```sh
@@ -511,6 +539,12 @@ export BUILD_TOOLS=$HOME/Library/Android/sdk/build-tools/35.0.0
 # внешние триггеры (12..14): окно повторного чтения logcat, если payload в первое
 # чтение не попал; критерий тот же, меняется только ширина окна, см. §9.2
 export EXTERNAL_RETRY_SETTLE_S=30
+# подпись: по умолчанию харнесс берёт релизный keystore (my-release-key.jks,
+# alias my-key-alias-2). Для прогона под отладочным ключом задай ВСЕ ТРИ явно,
+# иначе каждая ячейка кончится SIGN_FAIL «keystore password was incorrect»
+export KS=$HOME/.android/debug.keystore
+export KEY_ALIAS=androiddebugkey
+export KS_PASS=<пароль keystore и ключа: только через env, литералов в репо нет>
 
 cd tools/corpus
 python3 inventory.py            # нативные либы, min/targetSdk, число методов

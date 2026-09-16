@@ -566,16 +566,18 @@ func (p *parser) codeItem(off uint32) (*CodeItem, error) {
 // checkInsns walks the instruction stream and rejects opcodes whose index
 // operands the writer cannot remap (invoke-custom / const-method-handle).
 func (p *parser) checkInsns(off int, size uint32) error {
-	for i := uint32(0); i < size; {
-		unit := p.u16(off + int(i)*2)
-		f := insnTable[insnOpcode(unit)]
+	n := int(size)
+	get := func(i int) uint16 { return p.u16(off + 2*i) }
+	for i := 0; i < n; {
+		f := insnTable[insnOpcode(get(i))]
 		if f.kind == ikCallSite || f.kind == ikMethodHandle {
 			return unsupported("invoke-custom/const-method-handle instruction")
 		}
-		if f.width <= 0 || i+uint32(f.width) > size {
+		w, err := insnExtent(get, n, i)
+		if err != nil || w <= 0 || i+w > n {
 			return fmt.Errorf("instruction at code unit %d overruns the instruction stream", i)
 		}
-		i += uint32(f.width)
+		i += w
 	}
 	return nil
 }
@@ -588,13 +590,21 @@ func (p *parser) catchHandler(off int) ([]CatchHandler, int, error) {
 	}
 	typed := 0
 	hasCatchAll := false
+	// encoded_catch_handler.size is the number of *typed* catches; a catch-all
+	// is present iff size is non-positive. A size of 0 is a catch-all with no
+	// typed catches at all (dex-format.md, "encoded_catch_handler Format").
+	// The old reader used size-1/size>0 for the catch-all case, which both
+	// miscounted the handler length (so try_item.handler_off no longer landed
+	// on a handler and every real dex with a typed catch was rejected) and
+	// invented catch-all entries that are not in the file.
 	switch {
-	case size == 0:
 	case size > 0:
-		typed = int(size) - 1
+		typed = int(size)
+	case size < 0:
+		typed = int(-size)
 		hasCatchAll = true
 	default:
-		typed = int(-size)
+		hasCatchAll = true
 	}
 	out := make([]CatchHandler, 0, typed+1)
 	for i := 0; i < typed; i++ {
@@ -882,7 +892,17 @@ func (p *parser) encodedValue(off int) (EncodedValue, int, error) {
 		}
 		ev.Int = uint64(int64(int8(b)))
 		pos++
-	case 0x02, 0x03, 0x04, 0x06: // short, char, int, long
+	case 0x03: // char: unsigned, zero-extended. Sharing this branch with the
+		// signed types sign-extends 0x8000..0xffff into a huge uint64, and the
+		// encoder then refuses it ("char value out of range"). ART reads a char
+		// as the low 16 bits of the stored quantity, unsigned.
+		raw, err := p.readBytes(pos, arg)
+		if err != nil {
+			return EncodedValue{}, 0, err
+		}
+		ev.Int = raw
+		pos += arg
+	case 0x02, 0x04, 0x06: // short, int, long: signed, sign-extended
 		raw, err := p.readBytes(pos, arg)
 		if err != nil {
 			return EncodedValue{}, 0, err

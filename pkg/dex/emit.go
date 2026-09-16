@@ -203,7 +203,18 @@ func (d *DexFile) buildMaps() (*indexMaps, error) {
 		m.methods[newIdx] = Method{Class: methodKeys[old][0], Name: methodKeys[old][1], Proto: methodKeys[old][2]}
 	}
 
-	// --- class_defs must be sorted by class_idx: ART binary searches them.
+	// --- class_defs keep the source order.
+	//
+	// ART does *not* want them sorted by class_idx (that rule is a myth: it is
+	// type_ids that are binary searched). What the verifier enforces is the
+	// definition order -- a class must appear after its superclass and its
+	// interfaces -- and d8 already emits a file that satisfies it. Sorting by
+	// class_idx destroys that (dex descriptor order is unrelated to the class
+	// hierarchy: `Landroid/support/v4/app/RemoteActionCompatParcelizer;` sorts
+	// before its own superclass `Landroidx/core/app/RemoteActionCompatParcelizer;`
+	// because 'support' < 'x'), and dexdump then rejects the file with
+	// "Invalid class definition ordering". So: preserve the input order, and let
+	// the type-id shift happen underneath it.
 	classKeys := make([]uint32, len(d.Classes))
 	for i, cd := range d.Classes {
 		k, err := m.typ(cd.ClassIdx)
@@ -216,13 +227,12 @@ func (d *DexFile) buildMaps() (*indexMaps, error) {
 	for i := range m.classOrder {
 		m.classOrder[i] = i
 	}
-	sort.SliceStable(m.classOrder, func(a, b int) bool {
-		return classKeys[m.classOrder[a]] < classKeys[m.classOrder[b]]
-	})
-	for i := 1; i < len(m.classOrder); i++ {
-		if classKeys[m.classOrder[i]] == classKeys[m.classOrder[i-1]] {
-			return nil, fmt.Errorf("dex: two class_defs share class index %d", classKeys[m.classOrder[i]])
+	seen := make(map[uint32]bool, len(classKeys))
+	for _, k := range classKeys {
+		if seen[k] {
+			return nil, fmt.Errorf("dex: two class_defs share class index %d", k)
 		}
+		seen[k] = true
 	}
 	m.classRank = make([]uint32, len(d.Classes))
 	for newIdx, old := range m.classOrder {
@@ -972,10 +982,17 @@ func (x *encoder) writeCodeItem(ci *CodeItem) error {
 				}
 			}
 			switch {
+			case catchAll && typed == 0:
+				// A size of 0 is "catch-all, no typed catches": the negative
+				// spelling -0 does not exist, so 0 is the only encoding.
+				appendSLEB(0)
 			case catchAll:
-				appendSLEB(int32(typed + 1))
-			default:
+				// Negative size = typed catches followed by the catch-all
+				// address; -n means exactly n typed catches plus a catch-all.
 				appendSLEB(int32(-typed))
+			default:
+				// Positive size = exactly that many typed catches, no catch-all.
+				appendSLEB(int32(typed))
 			}
 			for _, c := range h {
 				if c.Type == NoIndex {
@@ -1015,9 +1032,11 @@ func (x *encoder) writeCodeItem(ci *CodeItem) error {
 func (x *encoder) remapInsns(insns []uint16) ([]uint16, error) {
 	out := make([]uint16, len(insns))
 	copy(out, insns)
+	get := func(i int) uint16 { return insns[i] }
 	for i := 0; i < len(insns); {
 		f := insnTable[insnOpcode(insns[i])]
-		if f.width < 1 || i+f.width > len(insns) {
+		w, err := insnExtent(get, len(insns), i)
+		if err != nil || w < 1 || i+w > len(insns) {
 			return nil, fmt.Errorf("dex: instruction at code unit %d overruns the stream", i)
 		}
 		if f.kind != ikNone {
@@ -1030,7 +1049,7 @@ func (x *encoder) remapInsns(insns []uint16) ([]uint16, error) {
 				return nil, err
 			}
 		}
-		i += f.width
+		i += w
 	}
 	return out, nil
 }

@@ -126,16 +126,21 @@ func (v *dexView) str(idx uint32) (string, error) {
 	}
 	start := p
 	for p < v.fileSize && v.data[p] != 0 {
-		if v.data[p]&0x80 == 0 {
-			p++
-			continue
-		}
-		if p+1 >= v.fileSize {
-			return "", fmt.Errorf("truncated string data at 0x%x", dataOff)
-		}
-		p += 2 // MUTF-8 surrogate pair
+		p++
 	}
-	return string(v.data[start:p]), nil
+	if p >= v.fileSize {
+		return "", fmt.Errorf("unterminated string data at 0x%x", dataOff)
+	}
+	// Decode properly: a MUTF-8 sequence is 1, 2 or 3 bytes, and folding the
+	// CESU-8 halves of a surrogate pair is what makes the value comparable in
+	// UTF-16 code unit order (see mutf8Decode). Stepping 2 bytes per non-ASCII
+	// lead byte desynchronises on any 3-byte sequence -- which is every CJK
+	// character, so it rejected the pristine dex of cn.rbc.termuc.
+	s, err := mutf8Decode(v.data[start:p])
+	if err != nil {
+		return "", fmt.Errorf("string data at 0x%x: %w", dataOff, err)
+	}
+	return s, nil
 }
 
 // typeDescriptor resolves type_ids[idx] to its descriptor.
@@ -185,6 +190,9 @@ func Validate(path string, wantClasses ...string) error {
 	if err != nil {
 		return fmt.Errorf("dex %s: %w", path, err)
 	}
+	if err := validateClassOrder(v, path); err != nil {
+		return err
+	}
 	for _, want := range wantClasses {
 		desc := "L" + replaceDots(want) + ";"
 		if _, ok := classes[desc]; !ok {
@@ -197,10 +205,52 @@ func Validate(path string, wantClasses ...string) error {
 		if err != nil {
 			return fmt.Errorf("dex %s: string_ids[%d]: %w", path, i, err)
 		}
-		if i > 0 && s < prev {
+		// dex orders string_ids by UTF-16 code unit, not by UTF-8 byte
+		// sequence (utf16Less is the same rule the encoder sorts by). A plain
+		// Go `<` rejects pristine dexes of obfuscated apps -- verified against
+		// the untouched classes.dex of cn.rbc.termuc, which installs and runs.
+		if i > 0 && utf16Less(s, prev) {
 			return fmt.Errorf("dex %s: string_ids not sorted at index %d (%q < %q)", path, i, s, prev)
 		}
 		prev = s
+	}
+	return nil
+}
+
+// validateClassOrder enforces ART's class definition order: a class must be
+// defined after its superclass, or dexdump rejects the file with "Invalid class
+// definition ordering". Interfaces are deliberately *not* covered: d8 freely
+// emits a class before interfaces it implements and dexdump accepts that, so a
+// rule there would reject valid files (52 of 79 corpus dexes trip it).
+//
+// Consequence for the encoder: rewriting class_defs must never re-sort them by
+// class_idx -- descriptor order and hierarchy order are unrelated.
+func validateClassOrder(v *dexView, path string) error {
+	type classDef struct {
+		classIdx, superIdx uint32
+	}
+	defs := make([]classDef, 0, v.classCount)
+	for i := uint32(0); i < v.classCount; i++ {
+		off := v.classOff + i*dexClassDefSize
+		if off+dexClassDefSize > v.fileSize {
+			return fmt.Errorf("dex %s: class_defs[%d] past end of file", path, i)
+		}
+		defs = append(defs, classDef{
+			classIdx: v.le().Uint32(v.data[off:]),
+			superIdx: v.le().Uint32(v.data[off+8:]),
+		})
+	}
+	pos := make(map[uint32]int, len(defs))
+	for i, d := range defs {
+		pos[d.classIdx] = i
+	}
+	for i, d := range defs {
+		if d.superIdx != NoIndex {
+			if p, ok := pos[d.superIdx]; ok && p > i {
+				return fmt.Errorf("dex %s: class_defs[%d] (type %d) defined before its superclass (type %d defined at %d)",
+					path, i, d.classIdx, d.superIdx, p)
+			}
+		}
 	}
 	return nil
 }

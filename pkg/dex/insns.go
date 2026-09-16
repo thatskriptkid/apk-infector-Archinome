@@ -1,5 +1,7 @@
 package dex
 
+import "fmt"
+
 // Dalvik instruction table.
 //
 // The writer has to walk the bytecode of every code_item to rewrite the string
@@ -85,6 +87,13 @@ var insnTable = func() [256]insnFormat {
 	set(0x52, 0x5f, insnFormat{width: 2, kind: ikField, off: 2, size: 2})
 
 	// 35c: filled-new-array, invoke-*
+	//
+	// The layout is [op|A|G] [BBBB index] [F|E|D|C registers]: the operand is the
+	// *second* code unit, the register word the third. Verified against dexdump on
+	// a real dex -- for the bytes `6e10 4200 0400` it prints
+	// `invoke-virtual {v4}, L...;.isLocked:()Z // method@0042`, i.e. index 0x0042
+	// in unit 1 and the register word 0x0004 in unit 2. Reading the operand from
+	// the third unit remaps the register list and leaves the real id stale.
 	set(0x24, 0x24, insnFormat{width: 3, kind: ikType, off: 2, size: 2})
 	set(0x6e, 0x72, insnFormat{width: 3, kind: ikMethod, off: 2, size: 2})
 
@@ -108,6 +117,57 @@ var insnTable = func() [256]insnFormat {
 
 	return t
 }()
+
+// Payload pseudo-instruction signatures: the first code unit of an inline data
+// blob referenced by fill-array-data / packed-switch / sparse-switch.
+//
+// The low byte of every signature is 0x00, so a linear walk that only looks at
+// the opcode byte reads a payload as nop (width 1) and then decodes the data as
+// instructions: it desynchronises within a few code units and either overruns
+// the stream (rejecting a valid file) or, worse, rewrites index operands that
+// are really payload bytes. Payloads are not instructions; they are skipped by
+// length, which is what ART's verifier does too.
+const (
+	packedSwitchPayload = 0x0100
+	sparseSwitchPayload = 0x0200
+	arrayDataPayload    = 0x0300
+)
+
+// insnExtent returns the number of code units occupied by the item at index i
+// of an n-unit stream read through get: the opcode width from insnTable for a
+// real instruction, or the full length of an inline payload.
+//
+//   - packed-switch-payload:  ident u16, size u16, first_key int32,
+//     size*4 bytes of targets
+//   - sparse-switch-payload:  ident u16, size u16, size*8 bytes of key/target
+//   - fill-array-data-payload: ident u16, element_width u16, size u32,
+//     size*element_width bytes of elements
+//
+// The packed payload carries first_key (4 bytes) between the header and the
+// target table: forgetting it makes the walk end two code units early and
+// reject every method whose packed switch is the last item in the code.
+func insnExtent(get func(int) uint16, n, i int) (int, error) {
+	switch get(i) {
+	case packedSwitchPayload:
+		if i+4 > n {
+			return 0, fmt.Errorf("dex: packed-switch-payload header runs past the end of the code")
+		}
+		return 4 + 2*int(get(i+1)), nil
+	case sparseSwitchPayload:
+		if i+2 > n {
+			return 0, fmt.Errorf("dex: sparse-switch-payload header runs past the end of the code")
+		}
+		return 2 + 4*int(get(i+1)), nil
+	case arrayDataPayload:
+		if i+4 > n {
+			return 0, fmt.Errorf("dex: fill-array-data-payload header runs past the end of the code")
+		}
+		elementWidth := int(get(i + 1))
+		size := int(get(i+2)) | int(get(i+3))<<16
+		return 4 + (elementWidth*size+1)/2, nil
+	}
+	return insnTable[insnOpcode(get(i))].width, nil
+}
 
 // insnWidth returns the size of the instruction at insns[pc] in code units.
 func insnWidth(unit uint16) int {
