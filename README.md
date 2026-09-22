@@ -1,14 +1,8 @@
-# Apk infector Archinome PoC
-
-This program infects APK with malicious code using DEX/Manifest patching. It also can be used to inject frida gadget for using frida on non-rooted device
-
-**Full description about What is it and How it works:**
+**Old article:**
 
 https://www.orderofsixangles.com/en/2020/04/07/android-infection-the-new-way.html (EN)
 
 https://www.orderofsixangles.com/ru/2020/07/04/Infecting-android-app-the-new-way.html (RU)
-
-**Please read article berfore use it!**
 
 # Vectors
 
@@ -118,31 +112,6 @@ options:
         14 - android:zygotePreloadName carrier + app-zygote service (trigger: the
             isolated service is started)
 ```
-./build.sh
-```
-
-To inject your malicious code, you should place file named payload_custom.dex with malicious code that follow rules:
-
-1. Class name within payload.dex - `aaaaaaaaaaaa.payload`
-
-2. Method `public void executePayload()`
-
-After you infect apk please align and sign it. You can use `build.sh` script for it.
-
-If there are problems make sure that:
-   1. The original application works
-   2. All file paths in PoC are correct
-   3. There's nothing unusual in apkinfector.log.
-   4. The name of the original Application class in the patched InjectedApp.dex is really in its place. 
-   5. The target application uses its Application class. Otherwise, PoC inoperability is predictable.
-
-If nothing helped, try to play with the `-min-api` parameter when compiling payload classes.
-If nothing worked, then create an issue on github.
-
-PoC includes files from https://github.com/avast/apkparser - see
-[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for licences.
-
-I am not a Go developer so forgive me for the quality of code
 
 # How this differs from other tools
 
@@ -154,37 +123,3 @@ broken by a rebuild. Attributes are inserted at the position AXML requires —
 sorted by **resolved resource id** — because the platform resolves attribute names
 through the resource map and a misordered attribute is silently ignored at runtime
 (`aapt2 dump xmltree` will happily print it anyway).
-
-| Tool | Manifest handling | Carriers / payload | Notes |
-|---|---|---|---|
-| **this PoC** | in-place AXML byte surgery (own parser/writer) | 14 carriers defined, 12 working (dex wrapper, frida gadget, provider, trampoline, receiver, appComponentFactory, native `lib/<abi>`, sealed assets, service `code_item` patch, native sideload, Application `code_item` patch, `<instrumentation>`, `android:backupAgent`, `android:zygotePreloadName`) + measured applicability over a 50-host corpus; the `code_item` patches leave the manifest byte-identical to the developer's | Go, one binary; `zipalign`/`apksigner` are the only external tools |
-| [objection](https://github.com/sensepost/objection) `patchapk` | `apktool d`/`b` round-trip | frida gadget | known rebuild failures (apktool [issue #2374](https://github.com/iBotPeaches/Apktool/issues/2374), "Corrupt XML binary file") |
-| [apk.sh](https://github.com/ax/apk.sh) | shell around `apktool` | gadget; pull/decode scripts | same rebuild step |
-
-# Contributing and security
-
-- [CONTRIBUTING.md](CONTRIBUTING.md) - build, tests, how to add a vector.
-- [SECURITY.md](SECURITY.md) - how to report a vulnerability privately.
-- [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) - licences of bundled and
-  derived code.
-| [apkinjector](https://github.com/nitanmarcel/apkinjector) (archived 2025-12) | unpack/repack, bundles included | gadget (script / CodeShare) and `*.so` "loaded when an activity starts" | closest Python analogue of the gadget vector |
-| [pyfrida-gadget](https://pypi.org/project/frida-gadget/) | repack | gadget | also adds `android.permission.INTERNET` for the listen-mode gadget — this PoC does the same, but opt-in (`ARCHINOME_ADD_INTERNET=1`) |
-| [ACVPatcher](https://github.com/pilgun/acvpatcher) | [QuestPatcher.Axml](https://github.com/Lauriethefish/QuestPatcher.Axml): parses the whole AXML into a tree and **re-serializes** it (new string pool, resource map and element chunks; attributes re-sorted by resource id) | manifest *editing*: add `uses-permission`, add `receiver`, add `instrumentation`, remove tag/permission, replace DEX | C#; built for ACVTool; no payload, no vectors |
-| [apk-infector](https://github.com/PushpenderIndia/apkinfector) | binds a second APK/dex, shuffles permissions for AV evasion | msfvenom meterpreter | unrelated project that shares the name |
-| [ManifestEditor](https://github.com/WindySha/ManifestEditor), MT Manager, AXML Editor | AXML editing for humans | — | manual work, no injection pipeline |
-
-Two things worth stating plainly:
-
-* The techniques are not new. What this PoC brings is one pipeline that pushes the
-  same payload through twelve working carriers without leaving the binary manifest
-  (vectors 9 and 11 do not touch the manifest at all), plus measured applicability
-  of each vector instead of a claim (`docs/corpus-50-matrix.md`).
-* Every vector is a repack, so the APK signature is always replaced — that is the
-  loudest artifact. Per-vector traces a defender can look for are in
-  `docs/detection-notes.md`.
-
-# TODO
-
-1. Add signing in golang
-2. Create anti debug frida gadget according to https://docs.google.com/presentation/d/1BktWJ91ill5iI_-ENzh2Uq14BGIHxxpONzNYybYJIC4/edit#slide=id.p. Add this to project.
-3. Get rid of Manifest unpacking
