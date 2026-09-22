@@ -41,6 +41,8 @@ device as part of a change unless the change is about boot behaviour.
 
 - `gofmt` everything you touch; CI fails on unformatted files.
 - `go vet ./...` must stay clean.
+- CI also runs `govulncheck`; build with a current patch release of Go, since
+  standard-library advisories are fixed in toolchain patch releases.
 - Two files are Kaitai-compiler output and are excluded from the `gofmt` gate:
   `pkg/dex/kaitai_dex.go`, `pkg/dex/vlq_base128_le.go`. Do not reformat them by
   hand - regenerate from the `.ksy` source instead.

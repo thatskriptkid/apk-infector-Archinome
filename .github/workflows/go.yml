@@ -77,7 +77,10 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@7b8cf10d4e4a01d4992d18a89f4d7dc5a3e6d6f4 # v4
         with:
-          go-version-file: go.mod
+          # Not `go-version-file: go.mod`: that resolves to the exact go1.26.0,
+          # whose standard library has known advisories. Scan with a patched
+          # release so the report is about this repository, not the toolchain.
+          go-version: "stable"
           cache: true
 
       - name: Install govulncheck (pinned)
