@@ -6,9 +6,9 @@ large ones.
 
 ## Build
 
-Go 1.22 or newer. Nothing else is needed to build the tool - the payload dex
-files (`payload_*.dex`) are committed, and there is no `apktool`/Android SDK
-step:
+Go 1.26 or newer (required by the `golang.org/x/text` version in `go.mod`).
+Nothing else is needed to build the tool - the payload dex files
+(`payload_*.dex`) are committed, and there is no `apktool`/Android SDK step:
 
 ```sh
 go build -o archinome ./cmd/archinome

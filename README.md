@@ -71,7 +71,8 @@ over a 50-host corpus: `docs/detection-notes.md`, `docs/corpus-50-matrix.md`,
 
 # Build
 
-Go 1.22 or newer, and nothing else:
+Go 1.26 or newer (the only dependency, `golang.org/x/text@v0.42.0`, requires
+it), and nothing else:
 
 ```sh
 go build -o archinome ./cmd/archinome
